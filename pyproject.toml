@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.backends.legacy:build"
+
+[project]
+name = "circuit_lm"
+version = "0.1.0"
+description = "Finite-state circuit language model trained with OR-Tools CP-SAT (zero floats)."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+dependencies = [
+    "ortools>=9.8",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7",
+]
+
+[project.scripts]
+circuit-lm = "circuit_lm.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["circuit_lm*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
