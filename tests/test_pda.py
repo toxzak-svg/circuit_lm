@@ -697,6 +697,60 @@ def test_pda_step_uses_source_state() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Serialization round-trip for push_configs / pop_configs
+# ---------------------------------------------------------------------------
+
+def test_pda_save_load_push_configs_round_trip(tmp_path: pathlib.Path) -> None:
+    """push_configs / pop_configs survive a JSON save/load cycle."""
+    from circuit_lm.io import save_model, load_model
+    from circuit_lm.tokenizer import Tokenizer
+    push = frozenset([(0, 0, STACK_EMPTY), (1, 0, 0)])
+    pop  = frozenset([(0, 1, 0)])
+    m = PDACircuitLM(
+        vocab_size=3, num_states=2, state_bits=1, stack_depth=2,
+        push_configs=push, pop_configs=pop,
+        transitions={(0, 0): 1, (0, 1): 0, (0, 2): 0,
+                     (1, 0): 0, (1, 1): 1, (1, 2): 0},
+        config_counts={(0, STACK_EMPTY): [0, 5, 3]},
+        config_pred_tokens={(0, STACK_EMPTY): 1},
+    )
+    tok = Tokenizer.from_text("( ) x ( ) x", vocab_size=4)
+    path = tmp_path / "model.json"
+    save_model(m, tok, path)
+    loaded, _ = load_model(path)
+    assert isinstance(loaded, PDACircuitLM)
+    assert loaded.push_configs == push
+    assert loaded.pop_configs == pop
+
+
+def test_pda_load_old_push_tokens_migrates(tmp_path: pathlib.Path) -> None:
+    """Old JSON with push_tokens=[0] / pop_tokens=[1] loads as degenerate push_configs."""
+    import json
+    from circuit_lm.io import load_model
+    old_payload = {
+        "model_type": "pda",
+        "vocab_size": 3, "num_states": 2, "state_bits": 1, "stack_depth": 1,
+        "push_tokens": [0],
+        "pop_tokens":  [1],
+        "transitions": {"0,0": 1, "0,1": 0, "0,2": 0,
+                        "1,0": 0, "1,1": 1, "1,2": 0},
+        "config_counts": {"0,-1": [0, 3, 1]},
+        "config_pred_tokens": {"0,-1": 1},
+        "tokenizer": {"mode": "char", "chars": ["<PAD>", "<UNK>", "(", ")", "x"]},
+    }
+    p = tmp_path / "old_model.json"
+    p.write_text(json.dumps(old_payload), encoding="utf-8")
+    loaded, _ = load_model(p)
+    assert isinstance(loaded, PDACircuitLM)
+    # Every (state, tok=0, any_stack_top) must be in push_configs
+    for s in range(2):
+        for st in [STACK_EMPTY, 0, 1, 2]:
+            assert (s, 0, st) in loaded.push_configs
+    # No push_tokens attribute
+    assert not hasattr(loaded, "push_tokens")
+
+
+# ---------------------------------------------------------------------------
 # No float types at runtime
 # ---------------------------------------------------------------------------
 

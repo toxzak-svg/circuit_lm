@@ -28,8 +28,8 @@ PDA file format (extends FSM format)
   "num_states":    <int>,
   "state_bits":    <int>,
   "stack_depth":   <int>,
-  "push_tokens":   [<int>, ...],
-  "pop_tokens":    [<int>, ...],
+  "push_configs":  [[state, token, stack_top], ...],
+  "pop_configs":   [[state, token, stack_top], ...],
   "transitions":   { "<state>,<token>": <next_state>, ... },
   "config_counts": { "<state>,<stack_top>": [<count_tok0>, ...], ... },
   "config_pred_tokens": { "<state>,<stack_top>": <predicted_token>, ... },
@@ -127,8 +127,8 @@ def _save_pda(
         "num_states":    model.num_states,
         "state_bits":    model.state_bits,
         "stack_depth":   model.stack_depth,
-        "push_tokens":   sorted(model.push_tokens),
-        "pop_tokens":    sorted(model.pop_tokens),
+        "push_configs":  sorted([s, tok, st] for (s, tok, st) in model.push_configs),
+        "pop_configs":   sorted([s, tok, st] for (s, tok, st) in model.pop_configs),
         "transitions":   transitions_out,
         "config_counts": config_counts_out,
         "config_pred_tokens": config_pred_tokens_out,
@@ -260,13 +260,43 @@ def _load_pda(data: dict) -> PDACircuitLM:
         st = int(key[last_comma + 1:])
         config_pred_tokens[(s, st)] = int(tok)
 
+    # New format: push_configs / pop_configs as [[s, tok, st], ...]
+    if "push_configs" in data:
+        push_configs: frozenset[tuple[int, int, int]] = frozenset(
+            (int(triple[0]), int(triple[1]), int(triple[2]))
+            for triple in data["push_configs"]
+        )
+        pop_configs: frozenset[tuple[int, int, int]] = frozenset(
+            (int(triple[0]), int(triple[1]), int(triple[2]))
+            for triple in data["pop_configs"]
+        )
+    else:
+        # Migration shim: old format with push_tokens / pop_tokens as int lists.
+        vocab_size_v = int(data["vocab_size"])
+        num_states_v = int(data["num_states"])
+        all_stack_tops = [STACK_EMPTY] + list(range(vocab_size_v))
+        push_tokens_old = [int(t) for t in data.get("push_tokens", [])]
+        pop_tokens_old  = [int(t) for t in data.get("pop_tokens", [])]
+        push_configs = frozenset(
+            (s, tok, st)
+            for tok in push_tokens_old
+            for s in range(num_states_v)
+            for st in all_stack_tops
+        )
+        pop_configs = frozenset(
+            (s, tok, st)
+            for tok in pop_tokens_old
+            for s in range(num_states_v)
+            for st in all_stack_tops
+        )
+
     return PDACircuitLM(
         vocab_size=int(data["vocab_size"]),
         num_states=int(data["num_states"]),
         state_bits=int(data["state_bits"]),
         stack_depth=int(data["stack_depth"]),
-        push_tokens=frozenset(int(t) for t in data["push_tokens"]),
-        pop_tokens=frozenset(int(t) for t in data["pop_tokens"]),
+        push_configs=push_configs,
+        pop_configs=pop_configs,
         transitions=transitions,
         config_counts=config_counts,
         config_pred_tokens=config_pred_tokens,
