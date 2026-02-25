@@ -99,21 +99,32 @@ python scripts/benchmark_small.py
 ## Architecture
 
 ```
-Text  ──▶  Tokenizer         char → int ID
+Text  ──▶  Tokenizer              char → int ID
            │
            ▼
-        Data loader          list[list[int]]
+        Data loader               list[list[int]]
            │
-           ▼
-      CircuitLM (FSM)        state ∈ {0 … 2^state_bits − 1}
-        transitions:  (state, token) → next_state    (int × int → int)
-        state_counts: state → [count_per_token]       (int → list[int])
+           ├─▶ CircuitLM (FSM)    state ∈ {0 … 2^state_bits − 1}
+           │     transitions:  (state, token) → next_state    (int × int → int)
+           │     state_counts: state → [count_per_token]       (int → list[int])
+           │     ├─▶ train_cpsat           hash-bootstrap + CP-SAT emission
+           │     └─▶ train_joint_cpsat     TRUE JOINT: states as CP-SAT vars
            │
-           ├─▶ train_cpsat   OR-Tools CP-SAT emission optimiser
-           ├─▶ infer         integer-weighted sampling / greedy
-           ├─▶ eval          integer accuracy
-           └─▶ io            JSON save / load (all integers)
+           └─▶ PDACircuitLM (PDA) config = (state, stack_top) ∈ int × int
+                 push_tokens / pop_tokens: frozenset[int]
+                 config_counts: (state, stack_top) → [count_per_token]
+                 ├─▶ train_pda_cpsat       two-phase: stack-policy then emission
+                 └─▶ train_joint_pda_cpsat TRUE JOINT: states + stack ops + emissions
 ```
+
+### Trainers at a glance
+
+| Module | Solver | States | Stack policy | Objective |
+|--------|--------|--------|--------------|-----------|
+| `train_cpsat` | CP-SAT | hash-fixed | — | emission argmax |
+| `train_joint_cpsat` | CP-SAT | **free vars** | — | **prediction accuracy** |
+| `train_pda_cpsat` | CP-SAT (2-phase) | hash-fixed | co-occurrence score | emission argmax |
+| `train_joint_pda_cpsat` | CP-SAT (joint) | **free vars** | **accuracy-driven** | **prediction accuracy** |
 
 ## Model format (JSON)
 
@@ -159,8 +170,10 @@ All numeric values are JSON integers.
 
 ## TODOs
 
-- [ ] Joint transition + state-assignment learning via CP-SAT (transitions are now learned for observed pairs under fixed hashed states; full iterative joint learning remains)
+- [x] Joint FSM learning via CP-SAT — `train_joint_cpsat.train_joint`: states, transitions, and emissions as free decision variables; objective = prediction accuracy
+- [x] Joint PDA learning via CP-SAT — `train_joint_pda_cpsat.train_joint_pda`: states, push/pop policy, and config emissions jointly in a single model
 - [x] Iterative state-assignment refinement (EM-like re-estimation loop over transition / emission counts)
 - [ ] Compressed binary model format (MessagePack or similar)
 - [ ] Multi-pass CP-SAT for larger state spaces
 - [ ] Streaming data loading for large corpora
+- [ ] Per-(state, token, stack_top) stack operations (currently token-only)

@@ -23,9 +23,9 @@ Coverage constraint:
   solution would collapse all states onto the globally dominant token, but the
   coverage constraint forces diversity.
 
-TODO: Jointly learn transitions and state assignments via CP-SAT (current
-      transition CP-SAT pass learns observed delta(s,t) under fixed
-      assignments within each pass; refinement re-assigns between passes).
+Jointly learning transitions and state assignments (the "true joint" problem)
+is implemented in ``train_joint_cpsat.train_joint``, which treats states as
+CP-SAT decision variables and maximises prediction accuracy directly.
 TODO: Multi-objective: balance accuracy vs. state entropy.
 """
 
@@ -573,9 +573,8 @@ def train(
     Returns:
         A trained :class:`~circuit_lm.circuits.CircuitLM` instance.
 
-    TODO: Jointly learn transitions and state assignments (current transition
-          CP-SAT pass still optimises under fixed assignments within each pass,
-          but assignments are now re-derived between passes).
+    For a fully joint formulation (states as free CP-SAT variables, objective
+    = accuracy), see ``train_joint_cpsat.train_joint``.
     """
     # 1 << state_bits == 2 ** state_bits, but stays strictly integer
     num_states: int = 1 << state_bits

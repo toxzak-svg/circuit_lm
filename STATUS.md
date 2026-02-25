@@ -5,13 +5,15 @@ Last updated: 2026-02-25
 ## Snapshot
 
 - Repo state: working tree was clean when this status snapshot was created.
-- Recent validation commit: `2fd3b59` (`Add CLI budget validation tests`)
+- Recent validation commit: `16ad53e` (`Add true joint CP-SAT FSM learning and depth-generalization experiment scripts`)
 - Python validation target: `3.12`
 - Packaging: editable install works with `py -3.12 -m pip install --user -e .[dev]`
 
 ## What Is Working
 
-- Full test suite passes: `140 passed` via `py -3.12 -m pytest -q`
+- Full test suite passes: `175 passed` via `py -3.12 -m pytest -q`
+- **True joint FSM solver** (`train_joint_cpsat.train_joint`): states, transitions, and emissions as free CP-SAT decision variables; objective = prediction accuracy directly
+- **True joint PDA solver** (`train_joint_pda_cpsat.train_joint_pda`): states, per-token push/pop policy, and per-config emissions jointly solved in a single CP-SAT model
 - CLI train/eval/sample flows run with the new split CP-SAT budget flags
 - Runtime CLI validation is covered for:
   - unpaired `--transition_steps` / `--emission_steps`
@@ -61,15 +63,25 @@ Quick observations from the first matrix run:
 
 ## Open Gaps (from README TODOs)
 
-- Joint transition + state CP-SAT learning (started: experimental opt-in joint bootstrap path exists in `train_cpsat.train(..., joint_transition_state_steps=K)`, but full joint objective / CLI exposure is still pending)
+- Per-(state, token, stack_top) stack operations: current PDA assigns push/pop by token ID only; a richer formulation would condition on the full config
 - Compressed binary model format (JSON remains the only tracked serialization path)
 - Multi-pass CP-SAT scaling improvements for larger state spaces
 - Streaming / stride-aware data loading for corpora larger than RAM
 
+## Scalability Limits (joint solvers)
+
+| Solver | Recommended T_total | num_states | vocab_size |
+|--------|---------------------|------------|------------|
+| `train_joint_cpsat` (FSM) | ≤ 4 000 | ≤ 16 | ≤ 64 |
+| `train_joint_pda_cpsat` (PDA) | ≤ 2 000 | ≤ 8 | ≤ 32 |
+
+The PDA joint solver is harder because shared `is_push`/`is_pop` decision
+variables couple all occurrences of each token simultaneously.
+
 ## Next Recommended Steps
 
-1. Decide whether to expose the experimental joint bootstrap via CLI (for example an advanced/experimental train flag) or keep it programmatic for now.
-2. Extend the joint bootstrap objective beyond hashed-state agreement (for example incorporate emission agreement or stronger regularization) and compare with the benchmark matrix.
+1. Run `train_joint_pda_cpsat` on the balanced-parens depth-generalization experiment to verify that jointly-learned push/pop tokens match the ground-truth bracket tokens without supervision.
+2. Compare depth-generalization curves: joint-PDA vs two-phase-PDA vs FSM vs PPM.
 3. Add a serialization benchmark comparing JSON save/load sizes and times before introducing a binary format.
 
 ## How To Update This File
