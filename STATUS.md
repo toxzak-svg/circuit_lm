@@ -61,16 +61,16 @@ Quick observations from the first matrix run:
 
 ## Open Gaps (from README TODOs)
 
-- Joint transition + state CP-SAT learning (currently state assignment is still hash-initialized / refined, not jointly solved)
+- Joint transition + state CP-SAT learning (started: experimental opt-in joint bootstrap path exists in `train_cpsat.train(..., joint_transition_state_steps=K)`, but full joint objective / CLI exposure is still pending)
 - Compressed binary model format (JSON remains the only tracked serialization path)
 - Multi-pass CP-SAT scaling improvements for larger state spaces
 - Streaming / stride-aware data loading for corpora larger than RAM
 
 ## Next Recommended Steps
 
-1. Start the joint transition + state CP-SAT work in `circuit_lm/train_cpsat.py` behind an opt-in flag or isolated function.
-2. Add a serialization benchmark comparing JSON save/load sizes and times before introducing a binary format.
-3. Decide a CI or local convention for storing benchmark snapshots (for example a gitignored `benchmarks/` directory plus periodic checked-in summaries in `STATUS.md`).
+1. Decide whether to expose the experimental joint bootstrap via CLI (for example an advanced/experimental train flag) or keep it programmatic for now.
+2. Extend the joint bootstrap objective beyond hashed-state agreement (for example incorporate emission agreement or stronger regularization) and compare with the benchmark matrix.
+3. Add a serialization benchmark comparing JSON save/load sizes and times before introducing a binary format.
 
 ## How To Update This File
 

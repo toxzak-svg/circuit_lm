@@ -185,6 +185,162 @@ def _collect_runtime_counts(
     return state_counts, transition_counts
 
 
+def _joint_bootstrap_transition_state_cpsat(
+    sequences: list[list[int]],
+    vocab_size: int,
+    num_states: int,
+    context_len: int,
+    time_limit_seconds: int,
+) -> tuple[
+    dict[int, list[int]],
+    dict[tuple[int, int], list[int]],
+    dict[tuple[int, int], int],
+]:
+    """Jointly solve runtime state assignments and ``delta(s,t)`` via CP-SAT.
+
+    This is an experimental bootstrap pass for the FSM trainer. It introduces
+    CP-SAT variables for:
+
+    - the runtime state after each consumed token occurrence in the corpus, and
+    - a dense transition table ``delta(s,t)`` for tokens observed in the data.
+
+    Constraints enforce transition consistency between adjacent positions
+    within each sequence and consistency with the chosen ``delta`` table. The
+    objective maximises agreement with the hashed-context state assignment used
+    by the default bootstrap path, giving a deterministic integer-only prior
+    while still allowing a jointly solved transition/state configuration.
+
+    Returns:
+        ``(state_counts, transition_counts, learned_transitions)`` where the
+        count tables are collected from the solved runtime states, and
+        ``learned_transitions`` is a sparse mapping for all states and
+        observed tokens.
+
+    Falls back to the hashed bootstrap counts with an empty transition map if
+    the solve fails or if the data contains out-of-range tokens.
+    """
+    if time_limit_seconds <= 0:
+        return (
+            _build_state_counts(sequences, vocab_size, num_states, context_len),
+            _build_transition_counts(sequences, vocab_size, num_states, context_len),
+            {},
+        )
+
+    # Flatten token occurrences across sequences while keeping sequence-local
+    # predecessor links for runtime-state chaining.
+    occurrences: list[tuple[int, int, int, int]] = []
+    # Each tuple is: (prev_occ_idx, tok, next_tok_or_neg1, hashed_dst_state)
+    observed_tokens: set[int] = set()
+
+    for seq in sequences:
+        if not seq:
+            continue
+        hashed_states: list[int] = []
+        for pos in range(len(seq)):
+            start = max(0, pos - context_len + 1)
+            ctx = seq[start : pos + 1]
+            hashed_states.append(_compute_state(ctx, num_states))
+
+        prev_occ_idx = -1
+        for pos, tok in enumerate(seq):
+            if not (0 <= tok < vocab_size):
+                # Existing training data should not hit this (tokeniser emits
+                # in-range IDs), but keep a safe fallback path.
+                return (
+                    _build_state_counts(sequences, vocab_size, num_states, context_len),
+                    _build_transition_counts(
+                        sequences, vocab_size, num_states, context_len
+                    ),
+                    {},
+                )
+            next_tok = -1
+            if pos + 1 < len(seq):
+                cand = seq[pos + 1]
+                if 0 <= cand < vocab_size:
+                    next_tok = cand
+            occurrences.append((prev_occ_idx, tok, next_tok, hashed_states[pos]))
+            prev_occ_idx = len(occurrences) - 1
+            observed_tokens.add(tok)
+
+    if not occurrences or not observed_tokens:
+        return (
+            _build_state_counts(sequences, vocab_size, num_states, context_len),
+            _build_transition_counts(sequences, vocab_size, num_states, context_len),
+            {},
+        )
+
+    model = cp_model.CpModel()
+
+    observed_tokens_sorted = sorted(observed_tokens)
+    delta_vars: dict[tuple[int, int], cp_model.IntVar] = {}
+    for tok in observed_tokens_sorted:
+        for s in range(num_states):
+            delta_vars[(s, tok)] = model.new_int_var(
+                0, num_states - 1, f"joint_delta_{s}_{tok}"
+            )
+
+    src_vars: list[cp_model.IntVar] = []
+    dst_vars: list[cp_model.IntVar] = []
+    match_vars: list[cp_model.BoolVar] = []
+
+    for occ_idx, (prev_occ_idx, tok, _next_tok, hashed_dst) in enumerate(occurrences):
+        src = model.new_int_var(0, num_states - 1, f"joint_src_{occ_idx}")
+        dst = model.new_int_var(0, num_states - 1, f"joint_dst_{occ_idx}")
+        src_vars.append(src)
+        dst_vars.append(dst)
+
+        if prev_occ_idx < 0:
+            model.add(src == 0)
+        else:
+            model.add(src == dst_vars[prev_occ_idx])
+
+        delta_row = [delta_vars[(s, tok)] for s in range(num_states)]
+        model.add_element(src, delta_row, dst)
+
+        match = model.new_bool_var(f"joint_match_{occ_idx}")
+        model.add(dst == hashed_dst).only_enforce_if(match)
+        model.add(dst != hashed_dst).only_enforce_if(match.Not())
+        match_vars.append(match)
+
+    if match_vars:
+        model.maximize(sum(match_vars))
+
+    solver = cp_model.CpSolver()
+    solver.parameters.max_time_in_seconds = time_limit_seconds
+    solver.parameters.log_search_progress = False
+    status = solver.solve(model)
+
+    if status not in (cp_model.OPTIMAL, cp_model.FEASIBLE):
+        return (
+            _build_state_counts(sequences, vocab_size, num_states, context_len),
+            _build_transition_counts(sequences, vocab_size, num_states, context_len),
+            {},
+        )
+
+    learned_transitions: dict[tuple[int, int], int] = {}
+    for tok in observed_tokens_sorted:
+        for s in range(num_states):
+            learned_transitions[(s, tok)] = solver.value(delta_vars[(s, tok)])
+
+    state_counts: dict[int, list[int]] = {}
+    transition_counts: dict[tuple[int, int], list[int]] = {}
+    for occ_idx, (_prev_occ_idx, tok, next_tok, _hashed_dst) in enumerate(occurrences):
+        src_state = solver.value(src_vars[occ_idx])
+        dst_state = solver.value(dst_vars[occ_idx])
+
+        key = (src_state, tok)
+        if key not in transition_counts:
+            transition_counts[key] = [0] * num_states
+        transition_counts[key][dst_state] += 1
+
+        if 0 <= next_tok < vocab_size:
+            if dst_state not in state_counts:
+                state_counts[dst_state] = [0] * vocab_size
+            state_counts[dst_state][next_tok] += 1
+
+    return state_counts, transition_counts, learned_transitions
+
+
 def _optimize_transitions_cpsat(
     transition_counts: dict[tuple[int, int], list[int]],
     num_states: int,
@@ -389,6 +545,7 @@ def train(
     transition_steps: int | None = None,
     emission_steps: int | None = None,
     refinement_rounds: int = 1,
+    joint_transition_state_steps: int | None = None,
 ) -> CircuitLM:
     """Train a CircuitLM from integer token sequences using OR-Tools CP-SAT.
 
@@ -408,6 +565,10 @@ def train(
         emission_steps:  Total emission-optimisation budget across all passes.
         refinement_rounds: Number of additional EM-like state-assignment
                          refinement rounds after the initial hashed pass.
+        joint_transition_state_steps: Optional extra CP-SAT bootstrap budget
+                         (integer seconds) for a joint transition/state solve
+                         before the standard transition/emission passes.
+                         Default ``None`` disables the experimental path.
 
     Returns:
         A trained :class:`~circuit_lm.circuits.CircuitLM` instance.
@@ -421,6 +582,8 @@ def train(
 
     if refinement_rounds < 0:
         raise ValueError("refinement_rounds must be >= 0")
+    if joint_transition_state_steps is not None and joint_transition_state_steps < 0:
+        raise ValueError("joint_transition_state_steps must be >= 0")
     num_passes = 1 + refinement_rounds
 
     transition_budget_total, emission_budget_total = _resolve_transition_emission_budgets(
@@ -435,13 +598,26 @@ def train(
         emission_budget_total, num_passes
     )
 
-    # Phase 1 – collect integer frequency tables and transition observations
-    state_counts = _build_state_counts(sequences, vocab_size, num_states, context_len)
-    transition_counts = _build_transition_counts(
-        sequences, vocab_size, num_states, context_len
-    )
-
     learned_transitions: dict[tuple[int, int], int] = {}
+    # Phase 1 – bootstrap integer frequency tables.
+    if joint_transition_state_steps is not None and joint_transition_state_steps > 0:
+        (
+            state_counts,
+            transition_counts,
+            learned_transitions,
+        ) = _joint_bootstrap_transition_state_cpsat(
+            sequences,
+            vocab_size,
+            num_states,
+            context_len,
+            joint_transition_state_steps,
+        )
+    else:
+        state_counts = _build_state_counts(sequences, vocab_size, num_states, context_len)
+        transition_counts = _build_transition_counts(
+            sequences, vocab_size, num_states, context_len
+        )
+
     pred_tokens: dict[int, int] = {}
 
     for pass_idx in range(num_passes):

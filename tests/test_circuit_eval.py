@@ -330,6 +330,143 @@ def test_train_splits_explicit_phase_budgets_across_refinement_passes(
     assert emission_calls == [4, 4]
 
 
+def test_joint_transition_state_bootstrap_returns_integer_tables() -> None:
+    import circuit_lm.train_cpsat as train_cpsat_mod
+
+    state_counts, transition_counts, learned_transitions = (
+        train_cpsat_mod._joint_bootstrap_transition_state_cpsat(
+            sequences=[[0, 1, 0, 1], [1, 0, 1]],
+            vocab_size=2,
+            num_states=2,
+            context_len=2,
+            time_limit_seconds=1,
+        )
+    )
+
+    assert state_counts
+    assert transition_counts
+    for s, counts in state_counts.items():
+        assert isinstance(s, int)
+        assert len(counts) == 2
+        assert all(isinstance(c, int) for c in counts)
+    for (s, t), counts in transition_counts.items():
+        assert isinstance(s, int)
+        assert isinstance(t, int)
+        assert len(counts) == 2
+        assert all(isinstance(c, int) for c in counts)
+    for (s, t), ns in learned_transitions.items():
+        assert isinstance(s, int)
+        assert isinstance(t, int)
+        assert isinstance(ns, int)
+        assert 0 <= ns < 2
+
+
+def test_train_can_use_joint_transition_state_bootstrap(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import circuit_lm.train_cpsat as train_cpsat_mod
+
+    calls: list[int] = []
+
+    def fake_joint_bootstrap(
+        sequences: list[list[int]],
+        vocab_size: int,
+        num_states: int,
+        context_len: int,
+        time_limit_seconds: int,
+    ) -> tuple[
+        dict[int, list[int]],
+        dict[tuple[int, int], list[int]],
+        dict[tuple[int, int], int],
+    ]:
+        _ = sequences, vocab_size, context_len
+        calls.append(time_limit_seconds)
+        assert num_states == 2
+        return (
+            {0: [2, 0], 1: [0, 2]},
+            {(0, 0): [0, 2], (1, 1): [2, 0]},
+            {(0, 0): 1, (1, 1): 0},
+        )
+
+    monkeypatch.setattr(
+        train_cpsat_mod,
+        "_joint_bootstrap_transition_state_cpsat",
+        fake_joint_bootstrap,
+    )
+    monkeypatch.setattr(
+        train_cpsat_mod,
+        "_build_state_counts",
+        lambda *args, **kwargs: pytest.fail("default bootstrap state_counts used"),
+    )
+    monkeypatch.setattr(
+        train_cpsat_mod,
+        "_build_transition_counts",
+        lambda *args, **kwargs: pytest.fail("default bootstrap transition_counts used"),
+    )
+
+    def fake_optimize_transitions(
+        transition_counts: dict[tuple[int, int], list[int]],
+        num_states: int,
+        time_limit_seconds: int,
+    ) -> dict[tuple[int, int], int]:
+        assert transition_counts == {(0, 0): [0, 2], (1, 1): [2, 0]}
+        assert num_states == 2
+        assert time_limit_seconds == 0
+        return {(0, 0): 1, (1, 1): 0}
+
+    def fake_optimize_emissions(
+        state_counts: dict[int, list[int]],
+        vocab_size: int,
+        num_states: int,
+        top_k_coverage: int,
+        time_limit_seconds: int,
+    ) -> dict[int, int]:
+        _ = top_k_coverage
+        assert state_counts == {0: [2, 0], 1: [0, 2]}
+        assert vocab_size == 2
+        assert num_states == 2
+        assert time_limit_seconds == 0
+        return {0: 0, 1: 1}
+
+    monkeypatch.setattr(
+        train_cpsat_mod,
+        "_optimize_transitions_cpsat",
+        fake_optimize_transitions,
+    )
+    monkeypatch.setattr(
+        train_cpsat_mod,
+        "_optimize_emissions_cpsat",
+        fake_optimize_emissions,
+    )
+
+    model = train_cpsat_mod.train(
+        sequences=[[0, 1]],
+        vocab_size=2,
+        state_bits=1,
+        steps=0,
+        transition_steps=0,
+        emission_steps=0,
+        refinement_rounds=0,
+        joint_transition_state_steps=7,
+    )
+
+    assert calls == [7]
+    assert model.pred_tokens == {0: 0, 1: 1}
+    assert model.transitions[(0, 0)] == 1
+    assert model.transitions[(1, 1)] == 0
+
+
+def test_train_rejects_negative_joint_transition_state_steps() -> None:
+    with pytest.raises(ValueError):
+        train(
+            sequences=[[0, 1]],
+            vocab_size=2,
+            state_bits=1,
+            steps=0,
+            joint_transition_state_steps=-1,
+        )
+
+
 # ---------------------------------------------------------------------------
 # Evaluation
 # ---------------------------------------------------------------------------
