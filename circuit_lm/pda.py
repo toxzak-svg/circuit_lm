@@ -18,10 +18,10 @@ Stack operations (integer-encoded)
     OP_PUSH = 1   push the current token onto the stack
     OP_POP  = 2   pop the top element off the stack
 
-The operation for each token is determined entirely by membership in
-``push_tokens`` or ``pop_tokens`` (two disjoint integer sets learned by
-CP-SAT in ``train_pda_cpsat.py``).  If a token belongs to neither set the
-operation is OP_NOP.
+The operation for each (src_state, token, stack_top_before_op) triple is
+determined by membership in ``push_configs`` or ``pop_configs`` (two disjoint
+sets of integer triples learned by CP-SAT in ``train_pda_cpsat.py``).  If a
+triple belongs to neither set the operation is OP_NOP.
 
 Expressiveness lift over plain FSM
 ------------------------------------
@@ -34,8 +34,6 @@ Expressiveness lift over plain FSM
 All fields, operations, and return values are integers.  No floats.
 
 TODO: Expose multiple stack elements (top-k) as configuration features.
-TODO: Learn stack operations per (state, token, stack_top) via CP-SAT
-      instead of the current token-only assignment.
 TODO: Support multi-stack / counter automaton extension.
 """
 
@@ -86,8 +84,8 @@ class PDACircuitLM:
     num_states:    Total FSM states (= 2 ** state_bits).
     state_bits:    Bit-width of state representation.
     stack_depth:   Maximum stack depth (integer bound).
-    push_tokens:   Frozen set of token IDs that trigger OP_PUSH.
-    pop_tokens:    Frozen set of token IDs that trigger OP_POP.
+    push_configs:  Frozen set of (src_state, token, stack_top_before_op) triples that trigger OP_PUSH.
+    pop_configs:   Frozen set of (src_state, token, stack_top_before_op) triples that trigger OP_POP.
     transitions:   ``{(state, token): next_state}`` integer mapping.
     config_counts: ``{(state, stack_top): list[int]}`` histograms.
     config_pred_tokens: ``{(state, stack_top): predicted_token}`` mapping.
@@ -97,8 +95,8 @@ class PDACircuitLM:
     num_states:    int
     state_bits:    int
     stack_depth:   int
-    push_tokens:   frozenset[int] = field(default_factory=frozenset)
-    pop_tokens:    frozenset[int] = field(default_factory=frozenset)
+    push_configs:  frozenset[tuple[int, int, int]] = field(default_factory=frozenset)
+    pop_configs:   frozenset[tuple[int, int, int]] = field(default_factory=frozenset)
     transitions:   dict[tuple[int, int], int] = field(default_factory=dict)
     config_counts: dict[tuple[int, int], list[int]] = field(default_factory=dict)
     config_pred_tokens: dict[tuple[int, int], int] = field(default_factory=dict)
@@ -107,11 +105,17 @@ class PDACircuitLM:
     # Stack operation
     # ------------------------------------------------------------------
 
-    def stack_op(self, token: int) -> int:
-        """Return the stack operation (OP_NOP / OP_PUSH / OP_POP) for a token."""
-        if token in self.push_tokens:
+    def stack_op(self, state: int, token: int, stack_top: int) -> int:
+        """Return the stack operation for the given (state, token, stack_top) triple.
+
+        Uses push_configs / pop_configs; returns OP_NOP if the triple appears in
+        neither set.  All arguments are integers; STACK_EMPTY (-1) is the sentinel
+        for an empty stack.
+        """
+        key = (state, token, stack_top)
+        if key in self.push_configs:
             return OP_PUSH
-        if token in self.pop_tokens:
+        if key in self.pop_configs:
             return OP_POP
         return OP_NOP
 
@@ -135,6 +139,9 @@ class PDACircuitLM:
     ) -> tuple[int, list[int]]:
         """Execute one PDA step and return (next_state, new_stack).
 
+        Stack operation is resolved using (state, token, stack_top) before the
+        FSM transition so that the source state governs the op decision.
+
         The stack is bounded by ``stack_depth``; OP_PUSH is silently ignored
         when the stack is already full.  OP_POP on an empty stack is a no-op.
 
@@ -146,15 +153,15 @@ class PDACircuitLM:
         Returns:
             ``(next_state, new_stack)`` both using only integer values.
         """
+        stack_top = stack[-1] if stack else STACK_EMPTY
+        op = self.stack_op(state, token, stack_top)
         next_s = self.next_state(state, token)
-        op = self.stack_op(token)
 
         new_stack = list(stack)
         if op == OP_PUSH and len(new_stack) < self.stack_depth:
             new_stack.append(token)
         elif op == OP_POP and new_stack:
             new_stack.pop()
-        # OP_NOP: new_stack unchanged
 
         return next_s, new_stack
 

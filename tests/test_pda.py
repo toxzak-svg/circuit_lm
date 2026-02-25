@@ -91,10 +91,24 @@ def test_op_codes_are_distinct_integers() -> None:
 
 
 def _make_tiny_model(vocab_size: int = 8, num_states: int = 4, stack_depth: int = 3) -> PDACircuitLM:
-    """Build a minimal PDA with deterministic push/pop tokens for testing."""
-    # Token 1 = PUSH, Token 2 = POP, everything else = NOP
-    push_tokens = frozenset({1})
-    pop_tokens  = frozenset({2})
+    """Build a minimal PDA with deterministic push/pop configs for testing.
+
+    Token 1 = PUSH (from any state / any stack_top), token 2 = POP (from any
+    state / any stack_top), everything else = NOP.
+    """
+    # Build config triples covering all (state, stack_top) combinations so
+    # that token-1 always pushes and token-2 always pops regardless of context.
+    stack_tops = [STACK_EMPTY] + list(range(vocab_size))
+    push_configs: frozenset[tuple[int, int, int]] = frozenset(
+        (s, 1, st)
+        for s in range(num_states)
+        for st in stack_tops
+    )
+    pop_configs: frozenset[tuple[int, int, int]] = frozenset(
+        (s, 2, st)
+        for s in range(num_states)
+        for st in stack_tops
+    )
 
     # Simple transitions: (s, t) -> (s + t) % num_states
     transitions: dict[tuple[int, int], int] = {
@@ -106,7 +120,7 @@ def _make_tiny_model(vocab_size: int = 8, num_states: int = 4, stack_depth: int 
     # config_counts: each config predicts token 3
     config_counts: dict[tuple[int, int], list[int]] = {}
     for s in range(num_states):
-        for st in [STACK_EMPTY] + list(range(vocab_size)):
+        for st in stack_tops:
             counts = [0] * vocab_size
             counts[3] = 10   # argmax is token 3
             config_counts[(s, st)] = counts
@@ -116,8 +130,8 @@ def _make_tiny_model(vocab_size: int = 8, num_states: int = 4, stack_depth: int 
         num_states=num_states,
         state_bits=2,
         stack_depth=stack_depth,
-        push_tokens=push_tokens,
-        pop_tokens=pop_tokens,
+        push_configs=push_configs,
+        pop_configs=pop_configs,
         transitions=transitions,
         config_counts=config_counts,
     )
@@ -125,19 +139,19 @@ def _make_tiny_model(vocab_size: int = 8, num_states: int = 4, stack_depth: int 
 
 def test_stack_op_nop() -> None:
     m = _make_tiny_model()
-    assert m.stack_op(0) == OP_NOP
-    assert m.stack_op(3) == OP_NOP
-    assert m.stack_op(7) == OP_NOP
+    assert m.stack_op(0, 0, STACK_EMPTY) == OP_NOP
+    assert m.stack_op(0, 3, STACK_EMPTY) == OP_NOP
+    assert m.stack_op(0, 7, STACK_EMPTY) == OP_NOP
 
 
 def test_stack_op_push() -> None:
     m = _make_tiny_model()
-    assert m.stack_op(1) == OP_PUSH
+    assert m.stack_op(0, 1, STACK_EMPTY) == OP_PUSH
 
 
 def test_stack_op_pop() -> None:
     m = _make_tiny_model()
-    assert m.stack_op(2) == OP_POP
+    assert m.stack_op(0, 2, STACK_EMPTY) == OP_POP
 
 
 def test_step_push_adds_to_stack() -> None:
@@ -201,7 +215,7 @@ def test_predict_token_prefers_learned_config_emission() -> None:
 def test_predict_token_empty_config_returns_zero() -> None:
     m = PDACircuitLM(
         vocab_size=4, num_states=2, state_bits=1, stack_depth=2,
-        push_tokens=frozenset(), pop_tokens=frozenset(),
+        push_configs=frozenset(), pop_configs=frozenset(),
         transitions={}, config_counts={},
     )
     assert m.predict_token(0, []) == 0
@@ -217,7 +231,7 @@ def test_config_histogram_returns_int_list() -> None:
 def test_config_histogram_unseen_config_zeros() -> None:
     m = PDACircuitLM(
         vocab_size=4, num_states=2, state_bits=1, stack_depth=2,
-        push_tokens=frozenset(), pop_tokens=frozenset(),
+        push_configs=frozenset(), pop_configs=frozenset(),
         transitions={}, config_counts={},
     )
     h = m.config_histogram(0, [])
@@ -276,12 +290,12 @@ def test_train_pda_returns_correct_num_states(
 
 
 def test_train_pda_push_pop_disjoint(tiny_pda: PDACircuitLM) -> None:
-    assert tiny_pda.push_tokens.isdisjoint(tiny_pda.pop_tokens)
+    assert tiny_pda.push_configs.isdisjoint(tiny_pda.pop_configs)
 
 
 def test_train_pda_push_pop_are_frozensets(tiny_pda: PDACircuitLM) -> None:
-    assert isinstance(tiny_pda.push_tokens, frozenset)
-    assert isinstance(tiny_pda.pop_tokens, frozenset)
+    assert isinstance(tiny_pda.push_configs, frozenset)
+    assert isinstance(tiny_pda.pop_configs, frozenset)
 
 
 def test_train_pda_config_counts_are_ints(tiny_pda: PDACircuitLM) -> None:
@@ -524,8 +538,8 @@ def test_evaluate_pda_consumes_current_token_before_predicting_next() -> None:
         num_states=2,
         state_bits=1,
         stack_depth=0,
-        push_tokens=frozenset(),
-        pop_tokens=frozenset(),
+        push_configs=frozenset(),
+        pop_configs=frozenset(),
         transitions={(0, 1): 1, (0, 0): 0, (1, 0): 1, (1, 1): 1, (0, 2): 0, (1, 2): 1},
         config_counts={
             (0, STACK_EMPTY): [5, 0, 0],
@@ -583,13 +597,13 @@ def test_pda_save_load_roundtrip(
     model2, tok2 = load_model(out_path)
 
     assert isinstance(model2, PDACircuitLM)
-    assert model2.vocab_size   == tiny_pda.vocab_size
-    assert model2.num_states   == tiny_pda.num_states
-    assert model2.state_bits   == tiny_pda.state_bits
-    assert model2.stack_depth  == tiny_pda.stack_depth
-    assert model2.push_tokens  == tiny_pda.push_tokens
-    assert model2.pop_tokens   == tiny_pda.pop_tokens
-    assert tok2.vocab_size     == tokenizer.vocab_size
+    assert model2.vocab_size    == tiny_pda.vocab_size
+    assert model2.num_states    == tiny_pda.num_states
+    assert model2.state_bits    == tiny_pda.state_bits
+    assert model2.stack_depth   == tiny_pda.stack_depth
+    assert model2.push_configs  == tiny_pda.push_configs
+    assert model2.pop_configs   == tiny_pda.pop_configs
+    assert tok2.vocab_size      == tokenizer.vocab_size
 
 
 def test_pda_save_load_config_counts_preserved(
@@ -633,6 +647,56 @@ def test_pda_save_load_stack_empty_key_preserved(
 
 
 # ---------------------------------------------------------------------------
+# Config-conditioned push/pop fields
+# ---------------------------------------------------------------------------
+
+def test_pda_has_push_configs_field() -> None:
+    """PDACircuitLM should have push_configs, not push_tokens."""
+    m = PDACircuitLM(
+        vocab_size=3, num_states=4, state_bits=2, stack_depth=1,
+        push_configs=frozenset([(0, 0, -1)]),
+        pop_configs=frozenset([(0, 1, 0)]),
+    )
+    assert isinstance(m.push_configs, frozenset)
+    assert (0, 0, -1) in m.push_configs
+
+
+def test_pda_stack_op_three_arg() -> None:
+    """stack_op(state, token, stack_top) dispatches via push_configs/pop_configs."""
+    m = PDACircuitLM(
+        vocab_size=3, num_states=4, state_bits=2, stack_depth=1,
+        push_configs=frozenset([(0, 0, -1)]),   # push tok=0 when state=0, stack=EMPTY
+        pop_configs=frozenset([(0, 1, 0)]),      # pop  tok=1 when state=0, stack=0
+    )
+    assert m.stack_op(0, 0, STACK_EMPTY) == OP_PUSH
+    assert m.stack_op(0, 1, 0)           == OP_POP
+    assert m.stack_op(0, 2, STACK_EMPTY) == OP_NOP
+    # Config not in push_configs, even if same token
+    assert m.stack_op(1, 0, STACK_EMPTY) == OP_NOP  # state=1, not in push_configs
+
+
+def test_pda_step_uses_source_state() -> None:
+    """step() resolves op with src state, not dst state."""
+    # State 0 → state 1 on tok=0.  Push only fires on (src=0, tok=0, stack=EMPTY).
+    transitions = {(0, 0): 1, (1, 0): 0}
+    m = PDACircuitLM(
+        vocab_size=3, num_states=2, state_bits=1, stack_depth=2,
+        push_configs=frozenset([(0, 0, STACK_EMPTY)]),
+        pop_configs=frozenset(),
+        transitions=transitions,
+    )
+    # First step: state=0 (src), tok=0, stack=[] → push should fire
+    next_s, new_stack = m.step(0, [], 0)
+    assert next_s == 1
+    assert new_stack == [0]   # tok=0 was pushed
+
+    # Second step: state=1 (src), tok=0, stack=[0] → push should NOT fire
+    next_s2, new_stack2 = m.step(1, [0], 0)
+    assert next_s2 == 0
+    assert new_stack2 == [0]  # unchanged
+
+
+# ---------------------------------------------------------------------------
 # No float types at runtime
 # ---------------------------------------------------------------------------
 
@@ -644,10 +708,10 @@ def test_no_float_values_in_pda_model(tiny_pda: PDACircuitLM) -> None:
     assert isinstance(tiny_pda.state_bits,  int)
     assert isinstance(tiny_pda.stack_depth, int)
 
-    for t in tiny_pda.push_tokens:
-        assert isinstance(t, int)
-    for t in tiny_pda.pop_tokens:
-        assert isinstance(t, int)
+    for triple in tiny_pda.push_configs:
+        assert all(isinstance(x, int) for x in triple)
+    for triple in tiny_pda.pop_configs:
+        assert all(isinstance(x, int) for x in triple)
 
     for (s, t), ns in tiny_pda.transitions.items():
         assert isinstance(s, int)
