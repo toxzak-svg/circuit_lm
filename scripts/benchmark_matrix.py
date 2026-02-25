@@ -5,6 +5,7 @@ Usage
     py -3 scripts/benchmark_matrix.py
     py -3 scripts/benchmark_matrix.py --csv-out bench.csv
     py -3 scripts/benchmark_matrix.py --tsv-out bench.tsv
+    py -3 scripts/benchmark_matrix.py --snapshot-dir benchmark_runs
 
 Purpose
 -------
@@ -82,6 +83,21 @@ def _build_parser() -> argparse.ArgumentParser:
         default="",
         metavar="PATH",
         help="Optional TSV output path for benchmark rows.",
+    )
+    parser.add_argument(
+        "--snapshot-dir",
+        default="",
+        metavar="DIR",
+        help=(
+            "Optional output directory for timestamped CSV/TSV exports. "
+            "Writes both formats using an integer timestamp tag."
+        ),
+    )
+    parser.add_argument(
+        "--snapshot-prefix",
+        default="benchmark_matrix",
+        metavar="NAME",
+        help="Filename prefix used with --snapshot-dir (default: benchmark_matrix).",
     )
     return parser
 
@@ -176,6 +192,11 @@ def _write_delimited(
     print(f"wrote {len(rows)} rows -> {path}")
 
 
+def _timestamp_tag() -> str:
+    # Integer-only timestamp string (YYYYMMDD-HHMMSS) for stable file naming.
+    return time.strftime("%Y%m%d-%H%M%S", time.localtime())
+
+
 def _collect_rows(data_path: str) -> list[dict[str, int | str]]:
     rows: list[dict[str, int | str]] = []
     for tokenizer_mode in TOKENIZER_MODES:
@@ -211,6 +232,13 @@ def main(argv: list[str] | None = None) -> None:
             _write_delimited(args.csv_out, rows, delimiter=",")
         if args.tsv_out:
             _write_delimited(args.tsv_out, rows, delimiter="\t")
+        if args.snapshot_dir:
+            stamp = _timestamp_tag()
+            out_dir = pathlib.Path(args.snapshot_dir)
+            csv_path = out_dir / f"{args.snapshot_prefix}_{stamp}.csv"
+            tsv_path = out_dir / f"{args.snapshot_prefix}_{stamp}.tsv"
+            _write_delimited(str(csv_path), rows, delimiter=",")
+            _write_delimited(str(tsv_path), rows, delimiter="\t")
     finally:
         tmp_path = pathlib.Path(data_path)
         if tmp_path.exists():

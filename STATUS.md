@@ -50,6 +50,9 @@ Notes:
 - Script now supports optional file output for diffable baselines:
   - `--csv-out PATH`
   - `--tsv-out PATH`
+- Script now supports timestamped snapshot exports:
+  - `--snapshot-dir DIR`
+  - optional `--snapshot-prefix NAME`
 
 Quick observations from the first matrix run:
 
@@ -65,9 +68,9 @@ Quick observations from the first matrix run:
 
 ## Next Recommended Steps
 
-1. Add a timestamped output convention or run wrapper for `scripts/benchmark_matrix.py` so baseline files are easy to archive and compare.
-2. Start the joint transition + state CP-SAT work in `circuit_lm/train_cpsat.py` behind an opt-in flag or isolated function.
-3. Add a serialization benchmark comparing JSON save/load sizes and times before introducing a binary format.
+1. Start the joint transition + state CP-SAT work in `circuit_lm/train_cpsat.py` behind an opt-in flag or isolated function.
+2. Add a serialization benchmark comparing JSON save/load sizes and times before introducing a binary format.
+3. Decide a CI or local convention for storing benchmark snapshots (for example a gitignored `benchmarks/` directory plus periodic checked-in summaries in `STATUS.md`).
 
 ## How To Update This File
 
@@ -75,4 +78,5 @@ Quick observations from the first matrix run:
 2. Re-run `py -3.12 scripts/benchmark_small.py`
 3. Re-run `py -3.12 scripts/benchmark_matrix.py` (optional but recommended)
 4. If needed, export `--csv-out` or `--tsv-out` for baseline comparison
-5. Update the snapshot, results, and next steps with commit hashes and dates
+5. If archiving a run, use `--snapshot-dir DIR`
+6. Update the snapshot, results, and next steps with commit hashes and dates
