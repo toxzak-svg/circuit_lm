@@ -91,25 +91,41 @@ All models: 20 s CP-SAT budget. PDA/joint-PDA: 4 states. FSM: 16 states. PPM ord
 
 | depth | PDA-2ph | PDA-jt | FSM    | PPM    |
 |-------|---------|--------|--------|--------|
-| 3     | 31.84%  | 49.02% | 55.33% | 59.49% |
-| 4*    | 30.16%  | 50.48% | 49.33% | 54.68% |
-| 5*    | 30.45%  | 50.24% | 49.39% | 51.40% |
-| 6*    | 29.56%  | 50.96% | 46.38% | 45.99% |
-| 7*    | 29.10%  | 50.91% | 44.90% | 42.43% |
-| 8*    | 28.51%  | 52.82% | 42.78% | 39.05% |
+| 3     | 44.66%  | 49.02% | 55.33% | 59.49% |
+| 4*    | 50.66%  | 50.48% | 49.33% | 54.68% |
+| 5*    | 50.60%  | 50.24% | 49.39% | 51.40% |
+| 6*    | 53.61%  | 50.96% | 46.38% | 45.99% |
+| 7*    | 55.09%  | 50.91% | 44.90% | 42.43% |
+| 8*    | **57.21%** | 52.82% | 42.78% | 39.05% |
 
 Key observations:
 
-- **PDA-2ph**: Correctly identified push=`(` pop=`)` via co-occurrence, but accuracy is 28–31% — below random. The co-occurrence phase objective does not directly optimize prediction accuracy; the emission phase inherits a policy that may not help.
-- **PDA-jt**: Learned no stack operations (`push_tokens=[]`), settling at ~50% (near-random for 3-token vocab). T_total ≈ 3000 exceeds the 2000-token recommended limit; the solver found a local optimum with no stack within the time budget.
-- **FSM** (16 states): 55% at depth 3, degrades to 43% at depth 8 — loses structural context beyond its window.
-- **PPM** (order 6): Highest at depth 3 (59%), degrades fastest to 39% at depth 8 — negative transfer from depth-3 n-gram patterns.
+- **PDA-2ph**: Correctly identified push=`(` pop=`)`. Accuracy *improves* with OOD depth (44.66% → 57.21%) while FSM and PPM degrade — the stack encodes a depth-invariant feature.
+- **PDA-jt**: No stack learned (T_total ≈ 3000 > 2000 limit), settling at ~50–52%. See joint-PDA note below.
+- **FSM** (16 states): 55% at depth 3, degrades to 43% at depth 8 — context window loses structural signal.
+- **PPM** (order 6): Highest at depth 3 (59%), degrades fastest to 39% — negative transfer from depth-3 n-gram patterns.
+
+### Bug Fixed: stack-top timing mismatch in two-phase PDA training
+
+The `8415208` refactor changed `evaluate_pda` to **step first, then predict** (semantically correct)
+but left both simulation functions (`_simulate_and_collect`, `_simulate_and_collect_runtime`)
+recording configs with the **pre-update** stack top. At every PUSH/POP position, training and
+evaluation looked up different config keys, causing the stack signal to be silently ignored.
+
+Fix: move the stack update before the config recording in both simulation functions.
+Result: PDA-2ph now demonstrates the expected depth-generalization behavior (57.21% at depth 8
+vs 42.78% FSM, 39.05% PPM).
+
+### Joint-PDA scalability note
+
+With 300 training sequences the joint PDA still finds no stack (`push_tokens=[]`). A 150-seq run
+also produced no stack. This is consistent with the T_total ≤ 2000 limit — the search space is
+too large for the 20 s budget to discover the push/pop structure.
 
 ## Next Recommended Steps
 
-1. Investigate the two-phase PDA emission quality: is the 28–31% accuracy a solver variance issue or a structural limitation of the co-occurrence stack-policy objective?
-2. Re-run joint-PDA depth experiment with fewer training sequences (≤ 150) to stay within the T_total ≤ 2000 recommendation and see if the stack is discovered.
-3. Add a serialization benchmark comparing JSON save/load sizes and times before introducing a binary format.
+1. Run joint-PDA experiment with a reduced vocabulary or smaller sequences to stay within T_total ≤ 2000 and verify stack discovery at that scale.
+2. Add a serialization benchmark comparing JSON save/load sizes and times before introducing a binary format.
 
 ## How To Update This File
 

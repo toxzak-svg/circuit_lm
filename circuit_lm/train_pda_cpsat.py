@@ -221,6 +221,14 @@ def _simulate_and_collect(
             ctx     = seq[start : pos + 1]
             state   = _compute_state(ctx, num_states)
 
+            # Update stack before recording config so that config keys match
+            # the post-update stack top used by evaluate_pda (which steps
+            # first and then calls predict_token on the resulting stack).
+            if tok in push_tokens and len(stack) < stack_depth:
+                stack.append(tok)
+            elif tok in pop_tokens and stack:
+                stack.pop()
+
             stack_top = stack[-1] if stack else STACK_EMPTY
             config    = (state, stack_top)
 
@@ -228,12 +236,6 @@ def _simulate_and_collect(
                 config_counts[config] = [0] * vocab_size
             if 0 <= next_tok < vocab_size:
                 config_counts[config][next_tok] += 1
-
-            # Update stack
-            if tok in push_tokens and len(stack) < stack_depth:
-                stack.append(tok)
-            elif tok in pop_tokens and stack:
-                stack.pop()
 
     return config_counts
 
@@ -276,6 +278,13 @@ def _simulate_and_collect_runtime(
                     transition_counts[t_key] = [0] * num_states
                 transition_counts[t_key][next_state] += 1
 
+            # Update stack before recording config so that config keys match
+            # the post-update stack top used by evaluate_pda.
+            if tok in push_tokens and len(stack) < stack_depth:
+                stack.append(tok)
+            elif tok in pop_tokens and stack:
+                stack.pop()
+
             if pos + 1 < len(seq):
                 next_tok = seq[pos + 1]
                 stack_top = stack[-1] if stack else STACK_EMPTY
@@ -284,11 +293,6 @@ def _simulate_and_collect_runtime(
                     config_counts[cfg] = [0] * vocab_size
                 if 0 <= next_tok < vocab_size:
                     config_counts[cfg][next_tok] += 1
-
-            if tok in push_tokens and len(stack) < stack_depth:
-                stack.append(tok)
-            elif tok in pop_tokens and stack:
-                stack.pop()
 
             state = next_state
 
