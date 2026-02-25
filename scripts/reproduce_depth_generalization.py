@@ -36,6 +36,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).parent.parent))
 from circuit_lm.eval import evaluate, evaluate_pda, evaluate_ppm
 from circuit_lm.metrics import format_accuracy, accuracy_pct_times100
 from circuit_lm.train_cpsat import train as train_fsm
+from circuit_lm.train_joint_pda_cpsat import train_joint_pda
 from circuit_lm.train_pda_cpsat import train_pda
 from circuit_lm.train_ppm import train_ppm
 
@@ -64,6 +65,14 @@ PDA_STACK_DEPTH: int = 10     # supports up to depth 10
 PDA_STEPS: int = 20           # CP-SAT wall-clock budget in seconds
 PDA_MAX_PUSH: int = 1         # only ONE push token expected ('(')
 PDA_MAX_POP: int = 1          # only ONE pop  token expected (')')
+
+# Joint-PDA uses same capacity as two-phase PDA for a fair comparison.
+# States, push/pop policy, and emissions are all free CP-SAT variables.
+JPDA_STATE_BITS: int = 2      # 4 states
+JPDA_STACK_DEPTH: int = 10
+JPDA_STEPS: int = 20          # CP-SAT wall-clock budget in seconds
+JPDA_MAX_PUSH: int = 1
+JPDA_MAX_POP: int = 1
 
 FSM_STATE_BITS: int = 4       # 16 states
 FSM_STEPS: int = 20           # CP-SAT wall-clock budget in seconds
@@ -220,15 +229,23 @@ def _eval_ppm_on_seqs(model, seqs: list[list[int]]) -> tuple[int, int]:
 # Printing helpers (integer-only)
 # ---------------------------------------------------------------------------
 
-_SEP = "-" * 72
-_HDR = f"{'depth':>7}  {'PDA':>10}  {'FSM':>10}  {'PPM':>10}  {'seqs':>6}"
+_SEP = "-" * 84
+_HDR = f"{'depth':>7}  {'PDA-2ph':>10}  {'PDA-jt':>10}  {'FSM':>10}  {'PPM':>10}  {'seqs':>6}"
 
 
-def _row(depth: int, pda: tuple[int, int], fsm: tuple[int, int], ppm: tuple[int, int], n: int) -> str:
+def _row(
+    depth: int,
+    pda: tuple[int, int],
+    jpda: tuple[int, int],
+    fsm: tuple[int, int],
+    ppm: tuple[int, int],
+    n: int,
+) -> str:
     ood = "*" if depth > MAX_TRAIN_DEPTH else " "
     return (
         f"{depth:>6}{ood}"
         f"  {format_accuracy(*pda):>10}"
+        f"  {format_accuracy(*jpda):>10}"
         f"  {format_accuracy(*fsm):>10}"
         f"  {format_accuracy(*ppm):>10}"
         f"  {n:>6}"
@@ -249,7 +266,7 @@ def run(
     """Run the full depth-generalisation experiment.
 
     Returns:
-        dict mapping depth -> {"pda": (correct, total), "fsm": ..., "ppm": ...}
+        dict mapping depth -> {"pda": ..., "jpda": ..., "fsm": ..., "ppm": ...}
     """
     if not quiet:
         print()
@@ -288,6 +305,20 @@ def run(
 
     if not quiet:
         print(f"  push_tokens={sorted(pda_model.push_tokens)}  pop_tokens={sorted(pda_model.pop_tokens)}")
+        print(f"Training joint-PDA (state_bits={JPDA_STATE_BITS}, stack_depth={JPDA_STACK_DEPTH}, steps={JPDA_STEPS}s) ...")
+    jpda_model = train_joint_pda(
+        sequences=train_data,
+        vocab_size=VOCAB_SIZE,
+        num_states=1 << JPDA_STATE_BITS,
+        stack_depth=JPDA_STACK_DEPTH,
+        steps=JPDA_STEPS,
+        max_push=JPDA_MAX_PUSH,
+        max_pop=JPDA_MAX_POP,
+        top_k_coverage=VOCAB_SIZE,
+    )
+
+    if not quiet:
+        print(f"  push_tokens={sorted(jpda_model.push_tokens)}  pop_tokens={sorted(jpda_model.pop_tokens)}")
         print(f"Training FSM  (state_bits={FSM_STATE_BITS}, context_len={FSM_CONTEXT_LEN}, steps={FSM_STEPS}s) ...")
     fsm_model = train_fsm(
         sequences=train_data,
@@ -325,26 +356,28 @@ def run(
             seed=seed + depth,
         )
         n = len(test_data)
-        pda_res = _eval_pda_on_seqs(pda_model, test_data)
-        fsm_res = _eval_fsm_on_seqs(fsm_model, test_data)
-        ppm_res = _eval_ppm_on_seqs(ppm_model, test_data)
+        pda_res  = _eval_pda_on_seqs(pda_model,  test_data)
+        jpda_res = _eval_pda_on_seqs(jpda_model, test_data)
+        fsm_res  = _eval_fsm_on_seqs(fsm_model,  test_data)
+        ppm_res  = _eval_ppm_on_seqs(ppm_model,  test_data)
 
-        results[depth] = {"pda": pda_res, "fsm": fsm_res, "ppm": ppm_res}
+        results[depth] = {"pda": pda_res, "jpda": jpda_res, "fsm": fsm_res, "ppm": ppm_res}
 
         if not quiet:
-            print(_row(depth, pda_res, fsm_res, ppm_res, n))
+            print(_row(depth, pda_res, jpda_res, fsm_res, ppm_res, n))
 
     if not quiet:
         print(_SEP)
         print()
-        print("Basis-points table (10000 = 100%):  PDA / FSM / PPM")
+        print("Basis-points table (10000 = 100%):  PDA-2ph / PDA-jt / FSM / PPM")
         for depth in TEST_DEPTHS:
             r = results[depth]
-            pda_bp = accuracy_pct_times100(*r["pda"])
-            fsm_bp = accuracy_pct_times100(*r["fsm"])
-            ppm_bp = accuracy_pct_times100(*r["ppm"])
+            pda_bp  = accuracy_pct_times100(*r["pda"])
+            jpda_bp = accuracy_pct_times100(*r["jpda"])
+            fsm_bp  = accuracy_pct_times100(*r["fsm"])
+            ppm_bp  = accuracy_pct_times100(*r["ppm"])
             ood = "*" if depth > MAX_TRAIN_DEPTH else " "
-            print(f"  depth {depth}{ood}: PDA={pda_bp:5d}  FSM={fsm_bp:5d}  PPM={ppm_bp:5d}")
+            print(f"  depth {depth}{ood}: PDA-2ph={pda_bp:5d}  PDA-jt={jpda_bp:5d}  FSM={fsm_bp:5d}  PPM={ppm_bp:5d}")
         print()
 
     return results

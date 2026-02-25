@@ -78,10 +78,37 @@ Quick observations from the first matrix run:
 The PDA joint solver is harder because shared `is_push`/`is_pop` decision
 variables couple all occurrences of each token simultaneously.
 
+## Depth-Generalization Experiment (Four-Model Comparison, 2026-02-25)
+
+Command:
+
+```
+py -3.12 scripts/reproduce_depth_generalization.py
+```
+
+Settings: train depth ≤ 3, 300 train seqs, 100 test seqs per depth, seed=42.
+All models: 20 s CP-SAT budget. PDA/joint-PDA: 4 states. FSM: 16 states. PPM order 6.
+
+| depth | PDA-2ph | PDA-jt | FSM    | PPM    |
+|-------|---------|--------|--------|--------|
+| 3     | 31.84%  | 49.02% | 55.33% | 59.49% |
+| 4*    | 30.16%  | 50.48% | 49.33% | 54.68% |
+| 5*    | 30.45%  | 50.24% | 49.39% | 51.40% |
+| 6*    | 29.56%  | 50.96% | 46.38% | 45.99% |
+| 7*    | 29.10%  | 50.91% | 44.90% | 42.43% |
+| 8*    | 28.51%  | 52.82% | 42.78% | 39.05% |
+
+Key observations:
+
+- **PDA-2ph**: Correctly identified push=`(` pop=`)` via co-occurrence, but accuracy is 28–31% — below random. The co-occurrence phase objective does not directly optimize prediction accuracy; the emission phase inherits a policy that may not help.
+- **PDA-jt**: Learned no stack operations (`push_tokens=[]`), settling at ~50% (near-random for 3-token vocab). T_total ≈ 3000 exceeds the 2000-token recommended limit; the solver found a local optimum with no stack within the time budget.
+- **FSM** (16 states): 55% at depth 3, degrades to 43% at depth 8 — loses structural context beyond its window.
+- **PPM** (order 6): Highest at depth 3 (59%), degrades fastest to 39% at depth 8 — negative transfer from depth-3 n-gram patterns.
+
 ## Next Recommended Steps
 
-1. Run `train_joint_pda_cpsat` on the balanced-parens depth-generalization experiment to verify that jointly-learned push/pop tokens match the ground-truth bracket tokens without supervision.
-2. Compare depth-generalization curves: joint-PDA vs two-phase-PDA vs FSM vs PPM.
+1. Investigate the two-phase PDA emission quality: is the 28–31% accuracy a solver variance issue or a structural limitation of the co-occurrence stack-policy objective?
+2. Re-run joint-PDA depth experiment with fewer training sequences (≤ 150) to stay within the T_total ≤ 2000 recommendation and see if the stack is discovered.
 3. Add a serialization benchmark comparing JSON save/load sizes and times before introducing a binary format.
 
 ## How To Update This File
