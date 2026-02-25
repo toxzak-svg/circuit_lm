@@ -40,6 +40,19 @@ Notes:
 - This is a smoke/perf baseline only (small synthetic text, not a quality benchmark).
 - Output confirms end-to-end train/eval/sample execution on current code.
 
+## Benchmark Matrix Tooling (Added 2026-02-25)
+
+- Added `scripts/benchmark_matrix.py` to run a small train/eval grid across:
+  - tokenizer mode (`char`, `bpe`)
+  - `state_bits` (`2`, `3`, `4`)
+  - CP-SAT `steps` (`1`, `2`, `5`)
+- Script emits a stable table with integer timings and integer metrics-derived accuracy strings.
+
+Quick observations from the first matrix run:
+
+- On the synthetic benchmark text, increasing `state_bits` improved accuracy more than increasing `steps`.
+- Accuracy is not monotonic in `steps` on this tiny dataset (for example some `steps=5` rows were worse than `steps=1`/`2`), so this matrix is useful for catching solver/objective behavior changes.
+
 ## Open Gaps (from README TODOs)
 
 - Joint transition + state CP-SAT learning (currently state assignment is still hash-initialized / refined, not jointly solved)
@@ -49,7 +62,7 @@ Notes:
 
 ## Next Recommended Steps
 
-1. Add a benchmark matrix script/runbook (state bits, steps, tokenizer mode) and record results here for regression tracking.
+1. Add CSV/TSV output (or file logging) to `scripts/benchmark_matrix.py` so baseline results can be diffed automatically.
 2. Start the joint transition + state CP-SAT work in `circuit_lm/train_cpsat.py` behind an opt-in flag or isolated function.
 3. Add a serialization benchmark comparing JSON save/load sizes and times before introducing a binary format.
 
@@ -57,4 +70,5 @@ Notes:
 
 1. Re-run `py -3.12 -m pytest -q`
 2. Re-run `py -3.12 scripts/benchmark_small.py`
-3. Update the snapshot, results, and next steps with commit hashes and dates
+3. Re-run `py -3.12 scripts/benchmark_matrix.py` (optional but recommended)
+4. Update the snapshot, results, and next steps with commit hashes and dates
