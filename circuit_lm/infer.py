@@ -15,9 +15,6 @@ no division, no log, no float required.
 Both FSM and PDA variants are provided; a unified helper dispatches to the
 correct one based on model type.
 
-TODO: Top-k filtering (integer: zero out all but the k largest counts).
-TODO: Repetition penalty (integer: divide repeated token counts by a
-      small integer factor, e.g. counts[t] //= penalty).
 TODO: Beam search over FSM states / PDA configurations.
 """
 
@@ -57,6 +54,71 @@ def _weighted_choice(weights: list[int], rng: random.Random) -> int:
         if r < cumsum:
             return i
     return len(weights) - 1    # unreachable guard
+
+
+def _apply_top_k(weights: list[int], top_k: int) -> list[int]:
+    """Zero out all but the top-*k* weights (integer-only).
+
+    Ties are broken by lower token ID first for deterministic behaviour.
+    Returns a new list.
+    """
+    if top_k <= 0 or top_k >= len(weights):
+        return list(weights)
+
+    ranked_ids = sorted(range(len(weights)), key=lambda i: (-weights[i], i))
+    keep = set(ranked_ids[:top_k])
+    return [w if i in keep else 0 for i, w in enumerate(weights)]
+
+
+def _apply_repetition_penalty(
+    weights: list[int],
+    seen_ids: list[int],
+    repeat_penalty_div: int,
+    repeat_window: int,
+) -> list[int]:
+    """Apply an integer repetition penalty to recently seen tokens.
+
+    Penalised tokens have their weight divided by ``repeat_penalty_div`` with
+    integer floor division, but a positive weight is kept at least 1 so the
+    token remains sampleable.
+
+    ``repeat_window <= 0`` means "use the full history in *seen_ids*".
+    Returns a new list.
+    """
+    if repeat_penalty_div <= 1 or not seen_ids:
+        return list(weights)
+
+    history = seen_ids[-repeat_window:] if repeat_window > 0 else seen_ids
+    repeated = {tok for tok in history if 0 <= tok < len(weights)}
+    if not repeated:
+        return list(weights)
+
+    out = list(weights)
+    for tok in repeated:
+        w = out[tok]
+        if w > 0:
+            out[tok] = max(1, w // repeat_penalty_div)
+    return out
+
+
+def _prepare_sampling_weights(
+    base_weights: list[int],
+    seen_ids: list[int],
+    top_k: int = 0,
+    repeat_penalty_div: int = 1,
+    repeat_window: int = 0,
+) -> list[int]:
+    """Apply integer sampling controls to a histogram.
+
+    Order of operations:
+      1. repetition penalty
+      2. top-k filter
+    """
+    weights = _apply_repetition_penalty(
+        base_weights, seen_ids, repeat_penalty_div, repeat_window
+    )
+    weights = _apply_top_k(weights, top_k)
+    return weights
 
 
 # ---------------------------------------------------------------------------
@@ -99,6 +161,9 @@ def sample_tokens(
     prompt_ids: list[int],
     max_tokens: int,
     seed: int,
+    top_k: int = 0,
+    repeat_penalty_div: int = 1,
+    repeat_window: int = 0,
 ) -> list[int]:
     """Autoregressively sample tokens using integer-weighted random sampling for FSM.
 
@@ -109,11 +174,15 @@ def sample_tokens(
         prompt_ids: Integer token IDs forming the prompt / context.
         max_tokens: Number of new tokens to generate.
         seed:       Integer random seed for reproducibility.
+        top_k:      Keep only the top-k integer weights before sampling
+                    (0 disables).
+        repeat_penalty_div: Divide repeated-token weights by this integer
+                    (1 disables).
+        repeat_window: Penalise repeats seen within the last N tokens;
+                    0 means use the full generated history.
 
     Returns:
         Full token-ID list: prompt + generated tokens.
-
-    TODO: Integer top-k filtering; integer repetition penalty.
     """
     rng = random.Random(seed)
     ids = list(prompt_ids)
@@ -122,7 +191,13 @@ def sample_tokens(
         state = model.next_state(state, tok)
 
     for _ in range(max_tokens):
-        weights = model.state_histogram(state)
+        weights = _prepare_sampling_weights(
+            model.state_histogram(state),
+            ids,
+            top_k=top_k,
+            repeat_penalty_div=repeat_penalty_div,
+            repeat_window=repeat_window,
+        )
         next_tok = _weighted_choice(weights, rng)
         ids.append(next_tok)
         state = model.next_state(state, next_tok)
@@ -175,6 +250,9 @@ def pda_sample_tokens(
     prompt_ids: list[int],
     max_tokens: int,
     seed: int,
+    top_k: int = 0,
+    repeat_penalty_div: int = 1,
+    repeat_window: int = 0,
 ) -> list[int]:
     """Autoregressively sample tokens using integer-weighted random sampling for PDA.
 
@@ -187,11 +265,15 @@ def pda_sample_tokens(
         prompt_ids: Integer token IDs forming the prompt / context.
         max_tokens: Number of new tokens to generate.
         seed:       Integer random seed for reproducibility.
+        top_k:      Keep only the top-k integer weights before sampling
+                    (0 disables).
+        repeat_penalty_div: Divide repeated-token weights by this integer
+                    (1 disables).
+        repeat_window: Penalise repeats seen within the last N tokens;
+                    0 means use the full generated history.
 
     Returns:
         Full token-ID list: prompt + generated tokens.
-
-    TODO: Integer top-k filtering; integer repetition penalty.
     """
     rng = random.Random(seed)
     ids = list(prompt_ids)
@@ -201,7 +283,13 @@ def pda_sample_tokens(
         state, stack = model.step(state, stack, tok)
 
     for _ in range(max_tokens):
-        weights = model.config_histogram(state, stack)
+        weights = _prepare_sampling_weights(
+            model.config_histogram(state, stack),
+            ids,
+            top_k=top_k,
+            repeat_penalty_div=repeat_penalty_div,
+            repeat_window=repeat_window,
+        )
         next_tok = _weighted_choice(weights, rng)
         ids.append(next_tok)
         state, stack = model.step(state, stack, next_tok)
@@ -250,6 +338,9 @@ def ppm_sample_tokens(
     prompt_ids: list[int],
     max_tokens: int,
     seed: int,
+    top_k: int = 0,
+    repeat_penalty_div: int = 1,
+    repeat_window: int = 0,
 ) -> list[int]:
     """Autoregressively sample tokens using integer-weighted random sampling for PPM.
 
@@ -261,6 +352,12 @@ def ppm_sample_tokens(
         prompt_ids: Integer token IDs forming the prompt / context.
         max_tokens: Number of new tokens to generate.
         seed:       Integer random seed for reproducibility.
+        top_k:      Keep only the top-k integer weights before sampling
+                    (0 disables).
+        repeat_penalty_div: Divide repeated-token weights by this integer
+                    (1 disables).
+        repeat_window: Penalise repeats seen within the last N tokens;
+                    0 means use the full generated history.
 
     Returns:
         Full token-ID list: prompt + generated tokens.
@@ -272,7 +369,13 @@ def ppm_sample_tokens(
         context = model.step(context, tok)
 
     for _ in range(max_tokens):
-        weights = model.context_histogram(context)
+        weights = _prepare_sampling_weights(
+            model.context_histogram(context),
+            ids,
+            top_k=top_k,
+            repeat_penalty_div=repeat_penalty_div,
+            repeat_window=repeat_window,
+        )
         next_tok = _weighted_choice(weights, rng)
         ids.append(next_tok)
         context = model.step(context, next_tok)
@@ -303,10 +406,37 @@ def decode_sample(
     prompt_ids: list[int],
     max_tokens: int,
     seed: int,
+    top_k: int = 0,
+    repeat_penalty_div: int = 1,
+    repeat_window: int = 0,
 ) -> list[int]:
     """Integer-weighted sampling for FSM, PDA, or PPM model."""
     if isinstance(model, PDACircuitLM):
-        return pda_sample_tokens(model, prompt_ids, max_tokens, seed)
+        return pda_sample_tokens(
+            model,
+            prompt_ids,
+            max_tokens,
+            seed,
+            top_k=top_k,
+            repeat_penalty_div=repeat_penalty_div,
+            repeat_window=repeat_window,
+        )
     if isinstance(model, PPMModel):
-        return ppm_sample_tokens(model, prompt_ids, max_tokens, seed)
-    return sample_tokens(model, prompt_ids, max_tokens, seed)
+        return ppm_sample_tokens(
+            model,
+            prompt_ids,
+            max_tokens,
+            seed,
+            top_k=top_k,
+            repeat_penalty_div=repeat_penalty_div,
+            repeat_window=repeat_window,
+        )
+    return sample_tokens(
+        model,
+        prompt_ids,
+        max_tokens,
+        seed,
+        top_k=top_k,
+        repeat_penalty_div=repeat_penalty_div,
+        repeat_window=repeat_window,
+    )

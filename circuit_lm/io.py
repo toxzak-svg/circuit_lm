@@ -16,6 +16,7 @@ FSM file format
   "state_bits":  <int>,
   "transitions": { "<state>,<token>": <next_state>, ... },
   "state_counts": { "<state>": [<count_tok0>, ...], ... },
+  "pred_tokens": { "<state>": <predicted_token>, ... },
   "tokenizer":   { "chars": [...] }
 }
 
@@ -31,6 +32,7 @@ PDA file format (extends FSM format)
   "pop_tokens":    [<int>, ...],
   "transitions":   { "<state>,<token>": <next_state>, ... },
   "config_counts": { "<state>,<stack_top>": [<count_tok0>, ...], ... },
+  "config_pred_tokens": { "<state>,<stack_top>": <predicted_token>, ... },
   "tokenizer":     { "chars": [...] }
 }
 
@@ -88,6 +90,9 @@ def _save_fsm(
     state_counts_out: dict[str, list[int]] = {
         str(s): counts for s, counts in model.state_counts.items()
     }
+    pred_tokens_out: dict[str, int] = {
+        str(s): tok for s, tok in model.pred_tokens.items()
+    }
     payload = {
         "model_type":   "fsm",
         "vocab_size":   model.vocab_size,
@@ -95,6 +100,7 @@ def _save_fsm(
         "state_bits":   model.state_bits,
         "transitions":  transitions_out,
         "state_counts": state_counts_out,
+        "pred_tokens":  pred_tokens_out,
         "tokenizer":    tokenizer.to_dict(),
     }
     pathlib.Path(path).write_text(json.dumps(payload, indent=2), encoding="utf-8")
@@ -112,6 +118,9 @@ def _save_pda(
     config_counts_out: dict[str, list[int]] = {
         f"{s},{st}": counts for (s, st), counts in model.config_counts.items()
     }
+    config_pred_tokens_out: dict[str, int] = {
+        f"{s},{st}": tok for (s, st), tok in model.config_pred_tokens.items()
+    }
     payload = {
         "model_type":    "pda",
         "vocab_size":    model.vocab_size,
@@ -122,6 +131,7 @@ def _save_pda(
         "pop_tokens":    sorted(model.pop_tokens),
         "transitions":   transitions_out,
         "config_counts": config_counts_out,
+        "config_pred_tokens": config_pred_tokens_out,
         "tokenizer":     tokenizer.to_dict(),
     }
     pathlib.Path(path).write_text(json.dumps(payload, indent=2), encoding="utf-8")
@@ -213,6 +223,10 @@ def _load_fsm(data: dict) -> CircuitLM:
         int(s): [int(c) for c in counts]
         for s, counts in data["state_counts"].items()
     }
+    pred_tokens: dict[int, int] = {
+        int(s): int(tok)
+        for s, tok in data.get("pred_tokens", {}).items()
+    }
 
     return CircuitLM(
         vocab_size=int(data["vocab_size"]),
@@ -220,6 +234,7 @@ def _load_fsm(data: dict) -> CircuitLM:
         state_bits=int(data["state_bits"]),
         transitions=transitions,
         state_counts=state_counts,
+        pred_tokens=pred_tokens,
     )
 
 
@@ -238,6 +253,13 @@ def _load_pda(data: dict) -> PDACircuitLM:
         st  = int(key[last_comma + 1:])
         config_counts[(s, st)] = [int(c) for c in counts]
 
+    config_pred_tokens: dict[tuple[int, int], int] = {}
+    for key, tok in data.get("config_pred_tokens", {}).items():
+        last_comma = key.rfind(",")
+        s = int(key[:last_comma])
+        st = int(key[last_comma + 1:])
+        config_pred_tokens[(s, st)] = int(tok)
+
     return PDACircuitLM(
         vocab_size=int(data["vocab_size"]),
         num_states=int(data["num_states"]),
@@ -247,4 +269,5 @@ def _load_pda(data: dict) -> PDACircuitLM:
         pop_tokens=frozenset(int(t) for t in data["pop_tokens"]),
         transitions=transitions,
         config_counts=config_counts,
+        config_pred_tokens=config_pred_tokens,
     )

@@ -191,6 +191,13 @@ def test_predict_token_with_nonempty_stack() -> None:
     assert isinstance(tok, int)
 
 
+def test_predict_token_prefers_learned_config_emission() -> None:
+    m = _make_tiny_model()
+    # Argmax for (0, STACK_EMPTY) is token 3 in the fixture model.
+    m.config_pred_tokens[(0, STACK_EMPTY)] = 5
+    assert m.predict_token(0, []) == 5
+
+
 def test_predict_token_empty_config_returns_zero() -> None:
     m = PDACircuitLM(
         vocab_size=4, num_states=2, state_bits=1, stack_depth=2,
@@ -294,6 +301,180 @@ def test_train_pda_transitions_are_ints(tiny_pda: PDACircuitLM) -> None:
         assert 0 <= ns < tiny_pda.num_states
 
 
+def test_train_pda_stores_cpsat_config_predictions(monkeypatch: pytest.MonkeyPatch) -> None:
+    import circuit_lm.train_pda_cpsat as train_pda_mod
+
+    def fake_simulate_and_collect(
+        sequences: list[list[int]],
+        vocab_size: int,
+        num_states: int,
+        stack_depth: int,
+        push_tokens: frozenset[int],
+        pop_tokens: frozenset[int],
+        context_len: int,
+    ) -> dict[tuple[int, int], list[int]]:
+        _ = (
+            sequences, vocab_size, num_states, stack_depth,
+            push_tokens, pop_tokens, context_len,
+        )
+        return {(0, STACK_EMPTY): [0, 10, 0], (1, STACK_EMPTY): [0, 0, 8]}
+
+    def fake_optimize(
+        config_counts: dict[tuple[int, int], list[int]],
+        vocab_size: int,
+        top_k_coverage: int,
+        time_limit_seconds: int,
+    ) -> dict[tuple[int, int], int]:
+        _ = config_counts, vocab_size, top_k_coverage, time_limit_seconds
+        return {(0, STACK_EMPTY): 2, (1, STACK_EMPTY): 1}
+
+    monkeypatch.setattr(train_pda_mod, "_simulate_and_collect", fake_simulate_and_collect)
+    monkeypatch.setattr(train_pda_mod, "_optimize_config_emissions_cpsat", fake_optimize)
+
+    model = train_pda_mod.train_pda(
+        sequences=[[1, 2, 3]],
+        vocab_size=3,
+        state_bits=1,
+        stack_depth=0,   # skips phase 1 solver
+        steps=1,
+    )
+
+    assert model.config_pred_tokens == {(0, STACK_EMPTY): 2, (1, STACK_EMPTY): 1}
+    assert model.predict_token(0, []) == 2
+    assert model.predict_token(1, []) == 1
+
+
+def test_train_pda_stores_learned_transitions(monkeypatch: pytest.MonkeyPatch) -> None:
+    import circuit_lm.train_pda_cpsat as train_pda_mod
+    from circuit_lm.circuits import HASH_PRIME
+
+    monkeypatch.setattr(
+        train_pda_mod,
+        "_build_transition_counts",
+        lambda *args, **kwargs: {(0, 1): [0, 5]},
+    )
+    monkeypatch.setattr(
+        train_pda_mod,
+        "_optimize_transitions_cpsat",
+        lambda *args, **kwargs: {(0, 1): 1},
+    )
+    monkeypatch.setattr(
+        train_pda_mod,
+        "_simulate_and_collect",
+        lambda *args, **kwargs: {(0, STACK_EMPTY): [0, 1], (1, STACK_EMPTY): [1, 0]},
+    )
+    monkeypatch.setattr(
+        train_pda_mod,
+        "_optimize_config_emissions_cpsat",
+        lambda *args, **kwargs: {(0, STACK_EMPTY): 1, (1, STACK_EMPTY): 0},
+    )
+
+    model = train_pda_mod.train_pda(
+        sequences=[[1, 0]],
+        vocab_size=2,
+        state_bits=1,
+        stack_depth=0,
+        steps=4,
+    )
+
+    assert model.transitions[(0, 1)] == 1
+    assert model.transitions[(1, 1)] == (1 * HASH_PRIME + 1 + 1) % model.num_states
+
+
+def test_train_pda_splits_explicit_budgets_across_refinement_passes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import circuit_lm.train_pda_cpsat as train_pda_mod
+
+    stack_calls: list[int] = []
+    transition_calls: list[int] = []
+    emission_calls: list[int] = []
+
+    monkeypatch.setattr(
+        train_pda_mod,
+        "_collect_pair_scores",
+        lambda *args, **kwargs: {(0, 1): 1},
+    )
+
+    def fake_learn_push_pop(
+        pair_scores: dict[tuple[int, int], int],
+        vocab_size: int,
+        max_push: int,
+        max_pop: int,
+        top_k_pairs: int,
+        time_limit_seconds: int,
+    ) -> tuple[frozenset[int], frozenset[int]]:
+        _ = pair_scores, vocab_size, max_push, max_pop, top_k_pairs
+        stack_calls.append(time_limit_seconds)
+        return frozenset({0}), frozenset({1})
+
+    monkeypatch.setattr(train_pda_mod, "_learn_push_pop_cpsat", fake_learn_push_pop)
+    monkeypatch.setattr(
+        train_pda_mod,
+        "_build_transition_counts",
+        lambda *args, **kwargs: {(0, 0): [1, 0]},
+    )
+    monkeypatch.setattr(
+        train_pda_mod,
+        "_simulate_and_collect",
+        lambda *args, **kwargs: {(0, STACK_EMPTY): [1, 0], (1, STACK_EMPTY): [0, 1]},
+    )
+    monkeypatch.setattr(
+        train_pda_mod,
+        "_simulate_and_collect_runtime",
+        lambda *args, **kwargs: (
+            {(0, STACK_EMPTY): [1, 0], (1, STACK_EMPTY): [0, 1]},
+            {(0, 0): [1, 0]},
+        ),
+    )
+
+    def fake_optimize_transitions(
+        transition_counts: dict[tuple[int, int], list[int]],
+        num_states: int,
+        time_limit_seconds: int,
+    ) -> dict[tuple[int, int], int]:
+        _ = transition_counts, num_states
+        transition_calls.append(time_limit_seconds)
+        return {(0, 0): 0}
+
+    def fake_optimize_emissions(
+        config_counts: dict[tuple[int, int], list[int]],
+        vocab_size: int,
+        top_k_coverage: int,
+        time_limit_seconds: int,
+    ) -> dict[tuple[int, int], int]:
+        _ = config_counts, vocab_size, top_k_coverage
+        emission_calls.append(time_limit_seconds)
+        return {(0, STACK_EMPTY): 0, (1, STACK_EMPTY): 1}
+
+    monkeypatch.setattr(
+        train_pda_mod,
+        "_optimize_transitions_cpsat",
+        fake_optimize_transitions,
+    )
+    monkeypatch.setattr(
+        train_pda_mod,
+        "_optimize_config_emissions_cpsat",
+        fake_optimize_emissions,
+    )
+
+    train_pda_mod.train_pda(
+        sequences=[[0, 1]],
+        vocab_size=2,
+        state_bits=1,
+        stack_depth=1,
+        steps=0,
+        stack_steps=7,
+        transition_steps=5,
+        emission_steps=3,
+        refinement_rounds=1,
+    )
+
+    assert stack_calls == [7]
+    assert transition_calls == [3, 2]
+    assert emission_calls == [2, 1]
+
+
 def test_train_pda_stack_depth_zero(
     sequences: list[list[int]], tokenizer: Tokenizer
 ) -> None:
@@ -335,6 +516,24 @@ def test_evaluate_any_dispatches_pda(
 def test_evaluate_pda_empty_sequences(tiny_pda: PDACircuitLM) -> None:
     results = evaluate_pda(tiny_pda, [])
     assert results == {"correct": 0, "total": 0}
+
+
+def test_evaluate_pda_consumes_current_token_before_predicting_next() -> None:
+    model = PDACircuitLM(
+        vocab_size=3,
+        num_states=2,
+        state_bits=1,
+        stack_depth=0,
+        push_tokens=frozenset(),
+        pop_tokens=frozenset(),
+        transitions={(0, 1): 1, (0, 0): 0, (1, 0): 1, (1, 1): 1, (0, 2): 0, (1, 2): 1},
+        config_counts={
+            (0, STACK_EMPTY): [5, 0, 0],
+            (1, STACK_EMPTY): [0, 0, 5],
+        },
+    )
+    results = evaluate_pda(model, [[1, 2]])
+    assert results == {"correct": 1, "total": 1}
 
 
 # ---------------------------------------------------------------------------
@@ -403,6 +602,17 @@ def test_pda_save_load_config_counts_preserved(
 
     for cfg, counts in tiny_pda.config_counts.items():
         assert model2.config_counts[cfg] == counts
+
+
+def test_pda_save_load_config_pred_tokens_preserved(
+    tiny_pda: PDACircuitLM, tokenizer: Tokenizer, tmp_path: pathlib.Path
+) -> None:
+    out_path = tmp_path / "pda_model.json"
+    save_model(tiny_pda, tokenizer, out_path)
+    model2, _ = load_model(out_path)
+    assert isinstance(model2, PDACircuitLM)
+
+    assert model2.config_pred_tokens == tiny_pda.config_pred_tokens
 
 
 def test_pda_save_load_stack_empty_key_preserved(

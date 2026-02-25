@@ -78,6 +78,7 @@ class PDACircuitLM:
     --------
     ``config_counts[(state, stack_top)]`` is an integer count histogram
     of length ``vocab_size`` over next tokens observed in training.
+    Optional ``config_pred_tokens`` stores learned emissions per config.
 
     Attributes
     ----------
@@ -89,6 +90,7 @@ class PDACircuitLM:
     pop_tokens:    Frozen set of token IDs that trigger OP_POP.
     transitions:   ``{(state, token): next_state}`` integer mapping.
     config_counts: ``{(state, stack_top): list[int]}`` histograms.
+    config_pred_tokens: ``{(state, stack_top): predicted_token}`` mapping.
     """
 
     vocab_size:    int
@@ -99,6 +101,7 @@ class PDACircuitLM:
     pop_tokens:    frozenset[int] = field(default_factory=frozenset)
     transitions:   dict[tuple[int, int], int] = field(default_factory=dict)
     config_counts: dict[tuple[int, int], list[int]] = field(default_factory=dict)
+    config_pred_tokens: dict[tuple[int, int], int] = field(default_factory=dict)
 
     # ------------------------------------------------------------------
     # Stack operation
@@ -162,11 +165,15 @@ class PDACircuitLM:
     def predict_token(self, state: int, stack: list[int]) -> int:
         """Return the argmax next token for the current configuration.
 
-        Uses ``config_counts[(state, stack_top)]`` where
+        Uses ``config_pred_tokens[(state, stack_top)]`` when available;
+        otherwise falls back to ``config_counts[(state, stack_top)]`` where
         ``stack_top = stack[-1]`` if the stack is non-empty, else
         ``STACK_EMPTY``.  Returns 0 (PAD) if no observations exist.
         """
         stack_top = stack[-1] if stack else STACK_EMPTY
+        learned = self.config_pred_tokens.get((state, stack_top))
+        if learned is not None:
+            return learned
         counts = self.config_counts.get((state, stack_top))
         if not counts:
             return 0

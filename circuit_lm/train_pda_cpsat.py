@@ -50,6 +50,12 @@ from ortools.sat.python import cp_model
 
 from circuit_lm.circuits import HASH_PRIME
 from circuit_lm.pda import STACK_EMPTY, PDACircuitLM
+from circuit_lm.train_cpsat import (
+    _build_transition_counts,
+    _next_state_with_fallback,
+    _optimize_transitions_cpsat,
+    _split_budget_across_passes,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -232,6 +238,63 @@ def _simulate_and_collect(
     return config_counts
 
 
+def _simulate_and_collect_runtime(
+    sequences: list[list[int]],
+    vocab_size: int,
+    num_states: int,
+    stack_depth: int,
+    push_tokens: frozenset[int],
+    pop_tokens: frozenset[int],
+    learned_transitions: dict[tuple[int, int], int],
+) -> tuple[dict[tuple[int, int], list[int]], dict[tuple[int, int], list[int]]]:
+    """Re-simulate the PDA under learned transitions and rebuild count tables.
+
+    Returns:
+        ``(config_counts, transition_counts)`` where:
+          - ``config_counts[(state, stack_top)]`` stores next-token histograms
+          - ``transition_counts[(src_state, token)]`` stores successor-state
+            histograms used by transition re-optimisation
+
+    The state component is updated using the current sparse transition table
+    with hash fallback; the stack policy (push/pop token sets) stays fixed.
+    """
+    config_counts: dict[tuple[int, int], list[int]] = {}
+    transition_counts: dict[tuple[int, int], list[int]] = {}
+
+    for seq in sequences:
+        state = 0
+        stack: list[int] = []
+
+        for pos, tok in enumerate(seq):
+            next_state = _next_state_with_fallback(
+                state, tok, num_states, learned_transitions
+            )
+
+            if 0 <= tok < vocab_size:
+                t_key = (state, tok)
+                if t_key not in transition_counts:
+                    transition_counts[t_key] = [0] * num_states
+                transition_counts[t_key][next_state] += 1
+
+            if pos + 1 < len(seq):
+                next_tok = seq[pos + 1]
+                stack_top = stack[-1] if stack else STACK_EMPTY
+                cfg = (next_state, stack_top)
+                if cfg not in config_counts:
+                    config_counts[cfg] = [0] * vocab_size
+                if 0 <= next_tok < vocab_size:
+                    config_counts[cfg][next_tok] += 1
+
+            if tok in push_tokens and len(stack) < stack_depth:
+                stack.append(tok)
+            elif tok in pop_tokens and stack:
+                stack.pop()
+
+            state = next_state
+
+    return config_counts, transition_counts
+
+
 # ---------------------------------------------------------------------------
 # Phase 2 – Config emission optimisation (same structure as FSM phase 2)
 # ---------------------------------------------------------------------------
@@ -253,7 +316,9 @@ def _optimize_config_emissions_cpsat(
     Returns:
         ``{(state, stack_top): predicted_token}`` dict of integers.
     """
-    active_configs = list(config_counts.keys())
+    active_configs = sorted(
+        cfg for cfg, counts in config_counts.items() if any(c > 0 for c in counts)
+    )
     if not active_configs:
         return {}
 
@@ -313,6 +378,36 @@ def _optimize_config_emissions_cpsat(
     return {cfg: solver.value(pred_tok[cfg]) for cfg in active_configs}
 
 
+def _resolve_pda_budgets(
+    steps: int,
+    stack_steps: int | None,
+    transition_steps: int | None,
+    emission_steps: int | None,
+) -> tuple[int, int, int]:
+    """Resolve total CP-SAT budgets for PDA phase1/transition/emission."""
+    if (
+        stack_steps is None
+        and transition_steps is None
+        and emission_steps is None
+    ):
+        phase1_seconds = steps // 2
+        phase2_seconds = steps - phase1_seconds
+        transition_seconds = phase2_seconds // 2
+        emission_seconds = phase2_seconds - transition_seconds
+        return phase1_seconds, transition_seconds, emission_seconds
+
+    if (
+        stack_steps is None
+        or transition_steps is None
+        or emission_steps is None
+    ):
+        raise ValueError(
+            "stack_steps, transition_steps, and emission_steps must be provided together"
+        )
+
+    return stack_steps, transition_steps, emission_steps
+
+
 # ---------------------------------------------------------------------------
 # Public training entry point
 # ---------------------------------------------------------------------------
@@ -329,17 +424,22 @@ def train_pda(
     max_pop: int = 16,
     top_k_pairs: int = 256,
     top_k_coverage: int = 16,
+    stack_steps: int | None = None,
+    transition_steps: int | None = None,
+    emission_steps: int | None = None,
+    refinement_rounds: int = 1,
 ) -> PDACircuitLM:
     """Train a PDACircuitLM from integer token sequences using OR-Tools CP-SAT.
 
     Two-phase CP-SAT training:
 
-    Phase 1 (steps // 2 seconds)
+    Phase 1 (stack_steps seconds)
         Learns which tokens trigger PUSH and POP by maximising the total
         co-occurrence weight of chosen push/pop pairs within distance
         1..stack_depth.  This is a set-selection CP-SAT problem.
 
-    Phase 2 (steps - steps // 2 seconds)
+    Phase 2 (transition_steps + emission_steps total, distributed across
+    refinement passes)
         Simulates the PDA on training data using the Phase-1 stack policy,
         collects integer (state, stack_top) → next-token frequency tables,
         then solves the emission-prediction CP-SAT problem subject to a
@@ -350,26 +450,44 @@ def train_pda(
         vocab_size:      Number of distinct token IDs.
         state_bits:      FSM state width in bits; num_states = 1 << state_bits.
         stack_depth:     Maximum integer stack depth (0 disables the stack).
-        steps:           Total CP-SAT wall-clock budget in integer seconds
-                         (split evenly between Phase 1 and Phase 2).
+        steps:           Legacy total CP-SAT wall-clock budget in integer
+                         seconds. Used only when explicit phase budgets are
+                         not provided.
         context_len:     Context window for FSM state hashing.
         max_push:        Maximum number of PUSH tokens (Phase 1 budget).
         max_pop:         Maximum number of POP tokens (Phase 1 budget).
         top_k_pairs:     How many top co-occurrence pairs to consider in Phase 1.
         top_k_coverage:  Tokens that must be covered in Phase 2.
+        stack_steps:     Total Phase-1 (stack-policy) CP-SAT budget.
+        transition_steps: Total transition CP-SAT budget across the initial
+                         pass plus refinement passes.
+        emission_steps:  Total config-emission CP-SAT budget across the
+                         initial pass plus refinement passes.
+        refinement_rounds: Number of additional EM-like transition/emission
+                         re-estimation rounds after the initial hashed pass.
 
     Returns:
         A trained :class:`~circuit_lm.pda.PDACircuitLM` instance.
 
-    TODO: Expose context_len, max_push, max_pop, top_k_pairs via the CLI.
     TODO: Joint phase optimisation in a single CP-SAT model.
-    TODO: Iterative refinement: re-derive state assignments after Phase 2.
     """
     num_states: int = 1 << state_bits
+    if refinement_rounds < 0:
+        raise ValueError("refinement_rounds must be >= 0")
+    num_passes = 1 + refinement_rounds
 
-    # Split time budget between the two phases (integer halving)
-    phase1_seconds = steps // 2
-    phase2_seconds = steps - phase1_seconds   # absorbs odd step
+    phase1_seconds, transition_budget_total, emission_budget_total = _resolve_pda_budgets(
+        steps,
+        stack_steps,
+        transition_steps,
+        emission_steps,
+    )
+    transition_pass_budgets = _split_budget_across_passes(
+        transition_budget_total, num_passes
+    )
+    emission_pass_budgets = _split_budget_across_passes(
+        emission_budget_total, num_passes
+    )
 
     # ------------------------------------------------------------------
     # Phase 1: stack policy
@@ -389,8 +507,12 @@ def train_pda(
         )
 
     # ------------------------------------------------------------------
-    # Phase 2: simulate PDA, collect config counts, optimise emissions
+    # Phase 2: transition learning + config emissions (+ refinement)
     # ------------------------------------------------------------------
+    transition_counts = _build_transition_counts(
+        sequences, vocab_size, num_states, context_len
+    )
+
     config_counts = _simulate_and_collect(
         sequences,
         vocab_size,
@@ -401,20 +523,45 @@ def train_pda(
         context_len,
     )
 
-    # Fill in all (state, STACK_EMPTY) configs so unseen states have zeros
+    learned_transitions: dict[tuple[int, int], int] = {}
+    config_pred_tokens: dict[tuple[int, int], int] = {}
+
+    for pass_idx in range(num_passes):
+        learned_transitions = _optimize_transitions_cpsat(
+            transition_counts,
+            num_states,
+            transition_pass_budgets[pass_idx],
+        )
+        config_pred_tokens = _optimize_config_emissions_cpsat(
+            config_counts,
+            vocab_size,
+            top_k_coverage,
+            emission_pass_budgets[pass_idx],
+        )
+
+        if pass_idx + 1 < num_passes:
+            config_counts, transition_counts = _simulate_and_collect_runtime(
+                sequences,
+                vocab_size,
+                num_states,
+                stack_depth,
+                push_tokens,
+                pop_tokens,
+                learned_transitions,
+            )
+
+    # Fill in all (state, STACK_EMPTY) configs after optimisation so that
+    # unseen zero-count configs cannot satisfy the coverage constraint.
     for s in range(num_states):
         if (s, STACK_EMPTY) not in config_counts:
             config_counts[(s, STACK_EMPTY)] = [0] * vocab_size
 
-    _optimize_config_emissions_cpsat(
-        config_counts, vocab_size, top_k_coverage, phase2_seconds
-    )
-
-    # Build fixed-hash transition table (integers only)
+    # Build transition table: learned observed pairs + hash fallback.
     transitions: dict[tuple[int, int], int] = {}
     for s in range(num_states):
         for t in range(vocab_size):
             transitions[(s, t)] = (s * HASH_PRIME + t + 1) % num_states
+    transitions.update(learned_transitions)
 
     return PDACircuitLM(
         vocab_size=vocab_size,
@@ -425,4 +572,5 @@ def train_pda(
         pop_tokens=pop_tokens,
         transitions=transitions,
         config_counts=config_counts,
+        config_pred_tokens=config_pred_tokens,
     )

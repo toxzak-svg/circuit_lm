@@ -356,6 +356,20 @@ def test_evaluate_ppm_empty_sequences(tiny_ppm: PPMModel) -> None:
     assert results == {"correct": 0, "total": 0}
 
 
+def test_evaluate_ppm_consumes_current_token_before_predicting_next() -> None:
+    # The model can predict token 2 only after consuming token 1.
+    model = PPMModel(
+        vocab_size=3,
+        order=1,
+        counts={
+            (): [5, 0, 0],
+            (1,): [0, 0, 5],
+        },
+    )
+    results = evaluate_ppm(model, [[1, 2]])
+    assert results == {"correct": 1, "total": 1}
+
+
 def test_evaluate_any_dispatches_ppm(
     tiny_ppm: PPMModel, sequences: list[list[int]]
 ) -> None:

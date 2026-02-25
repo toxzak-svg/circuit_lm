@@ -14,7 +14,8 @@ Tokens are non-negative integers in [0, vocab_size).
 
 The *transitions* dict stores learned (or hash-derived) delta values.
 The *state_counts* dict stores integer histograms over next tokens, one
-histogram per state.
+histogram per state.  Optional *pred_tokens* stores a learned emission
+decision (single predicted token) per state, e.g. from CP-SAT.
 
 TODO: Expose circuit as a boolean DAG for interpretability.
 TODO: Support multi-step lookahead states.
@@ -40,6 +41,9 @@ class CircuitLM:
         transitions:  Mapping (state, token) → next_state (integers).
         state_counts: Mapping state → list[int] of length vocab_size,
                       representing an integer count histogram over next tokens.
+        pred_tokens:  Optional mapping state → predicted token.  If present,
+                      :meth:`predict_token` uses this learned emission table
+                      and falls back to argmax of *state_counts* otherwise.
     """
 
     vocab_size: int
@@ -47,6 +51,7 @@ class CircuitLM:
     state_bits: int
     transitions: dict[tuple[int, int], int] = field(default_factory=dict)
     state_counts: dict[int, list[int]] = field(default_factory=dict)
+    pred_tokens: dict[int, int] = field(default_factory=dict)
 
     # ------------------------------------------------------------------
     # Transition
@@ -84,8 +89,14 @@ class CircuitLM:
     def predict_token(self, state: int) -> int:
         """Return the argmax (most frequent) next token from *state*.
 
-        Returns token 0 (PAD) if the state has no observations.
+        If ``pred_tokens`` contains an explicit learned emission for *state*,
+        that integer token ID is returned.  Otherwise falls back to the argmax
+        of ``state_counts[state]``.  Returns token 0 (PAD) if the state has no
+        observations.
         """
+        learned = self.pred_tokens.get(state)
+        if learned is not None:
+            return learned
         counts = self.state_counts.get(state)
         if not counts:
             return 0
