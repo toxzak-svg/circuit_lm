@@ -2,6 +2,8 @@
 
 A **finite-state circuit language model** trained with [OR-Tools CP-SAT](https://developers.google.com/optimization/reference/python/sat/python/cp_model).
 
+Current project snapshot and next milestones: see [`STATUS.md`](STATUS.md).
+
 ## Hard constraints
 
 | Constraint | Enforcement |
