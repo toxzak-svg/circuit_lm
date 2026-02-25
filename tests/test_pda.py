@@ -654,11 +654,11 @@ def test_pda_has_push_configs_field() -> None:
     """PDACircuitLM should have push_configs, not push_tokens."""
     m = PDACircuitLM(
         vocab_size=3, num_states=4, state_bits=2, stack_depth=1,
-        push_configs=frozenset([(0, 0, -1)]),
+        push_configs=frozenset([(0, 0, STACK_EMPTY)]),
         pop_configs=frozenset([(0, 1, 0)]),
     )
     assert isinstance(m.push_configs, frozenset)
-    assert (0, 0, -1) in m.push_configs
+    assert (0, 0, STACK_EMPTY) in m.push_configs
 
 
 def test_pda_stack_op_three_arg() -> None:

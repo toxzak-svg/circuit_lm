@@ -70,7 +70,7 @@ class PDACircuitLM:
     Transition
     ----------
     ``next_state = transitions.get((state, token), hash_fallback)``
-    Stack operation is determined by token membership in push/pop sets.
+    Stack operation is determined by triple membership in push_configs/pop_configs.
 
     Emission
     --------
