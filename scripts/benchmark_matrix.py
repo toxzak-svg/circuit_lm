@@ -3,6 +3,8 @@
 Usage
 -----
     py -3 scripts/benchmark_matrix.py
+    py -3 scripts/benchmark_matrix.py --csv-out bench.csv
+    py -3 scripts/benchmark_matrix.py --tsv-out bench.tsv
 
 Purpose
 -------
@@ -13,6 +15,8 @@ Purpose
 
 from __future__ import annotations
 
+import argparse
+import csv
 import pathlib
 import sys
 import tempfile
@@ -43,9 +47,43 @@ TOKENIZER_MODES: tuple[str, ...] = ("char", "bpe")
 STATE_BITS_VALUES: tuple[int, ...] = (2, 3, 4)
 STEPS_VALUES: tuple[int, ...] = (1, 2, 5)
 
+COLUMN_NAMES: tuple[str, ...] = (
+    "tokenizer",
+    "state_bits",
+    "steps",
+    "effective_vocab_size",
+    "num_sequences",
+    "total_tokens",
+    "tok_ms",
+    "train_ms",
+    "eval_ms",
+    "correct",
+    "total",
+    "accuracy",
+)
+
 
 def _ns_to_ms(ns: int) -> int:
     return ns // 1_000_000
+
+
+def _build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        description="Run a small benchmark matrix and print a table."
+    )
+    parser.add_argument(
+        "--csv-out",
+        default="",
+        metavar="PATH",
+        help="Optional CSV output path for benchmark rows.",
+    )
+    parser.add_argument(
+        "--tsv-out",
+        default="",
+        metavar="PATH",
+        help="Optional TSV output path for benchmark rows.",
+    )
+    return parser
 
 
 def _run_one(
@@ -98,7 +136,7 @@ def _run_one(
     }
 
 
-def main() -> None:
+def _print_rows(rows: list[dict[str, int | str]]) -> None:
     print("circuit_lm benchmark matrix")
     print(
         "grid:"
@@ -112,6 +150,51 @@ def main() -> None:
         " tok_ms | train_ms | eval_ms | correct | total | accuracy"
     )
 
+    for row in rows:
+        print(
+            f"{row['tokenizer']} | {row['state_bits']} | {row['steps']} | "
+            f"{row['effective_vocab_size']} | {row['num_sequences']} | "
+            f"{row['total_tokens']} | {row['tok_ms']} | {row['train_ms']} | "
+            f"{row['eval_ms']} | {row['correct']} | {row['total']} | "
+            f"{row['accuracy']}"
+        )
+
+
+def _write_delimited(
+    path_str: str,
+    rows: list[dict[str, int | str]],
+    *,
+    delimiter: str,
+) -> None:
+    path = pathlib.Path(path_str)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8", newline="") as fh:
+        writer = csv.DictWriter(fh, fieldnames=list(COLUMN_NAMES), delimiter=delimiter)
+        writer.writeheader()
+        for row in rows:
+            writer.writerow(row)
+    print(f"wrote {len(rows)} rows -> {path}")
+
+
+def _collect_rows(data_path: str) -> list[dict[str, int | str]]:
+    rows: list[dict[str, int | str]] = []
+    for tokenizer_mode in TOKENIZER_MODES:
+        for state_bits in STATE_BITS_VALUES:
+            for steps in STEPS_VALUES:
+                rows.append(
+                    _run_one(
+                        data_path=data_path,
+                        tokenizer_mode=tokenizer_mode,
+                        state_bits=state_bits,
+                        steps=steps,
+                    )
+                )
+    return rows
+
+
+def main(argv: list[str] | None = None) -> None:
+    args = _build_parser().parse_args(argv)
+
     with tempfile.NamedTemporaryFile(
         mode="w",
         suffix=".txt",
@@ -121,22 +204,17 @@ def main() -> None:
         fh.write(BENCHMARK_TEXT)
         data_path = fh.name
 
-    for tokenizer_mode in TOKENIZER_MODES:
-        for state_bits in STATE_BITS_VALUES:
-            for steps in STEPS_VALUES:
-                row = _run_one(
-                    data_path=data_path,
-                    tokenizer_mode=tokenizer_mode,
-                    state_bits=state_bits,
-                    steps=steps,
-                )
-                print(
-                    f"{row['tokenizer']} | {row['state_bits']} | {row['steps']} | "
-                    f"{row['effective_vocab_size']} | {row['num_sequences']} | "
-                    f"{row['total_tokens']} | {row['tok_ms']} | {row['train_ms']} | "
-                    f"{row['eval_ms']} | {row['correct']} | {row['total']} | "
-                    f"{row['accuracy']}"
-                )
+    try:
+        rows = _collect_rows(data_path)
+        _print_rows(rows)
+        if args.csv_out:
+            _write_delimited(args.csv_out, rows, delimiter=",")
+        if args.tsv_out:
+            _write_delimited(args.tsv_out, rows, delimiter="\t")
+    finally:
+        tmp_path = pathlib.Path(data_path)
+        if tmp_path.exists():
+            tmp_path.unlink()
 
 
 if __name__ == "__main__":

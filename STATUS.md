@@ -47,6 +47,9 @@ Notes:
   - `state_bits` (`2`, `3`, `4`)
   - CP-SAT `steps` (`1`, `2`, `5`)
 - Script emits a stable table with integer timings and integer metrics-derived accuracy strings.
+- Script now supports optional file output for diffable baselines:
+  - `--csv-out PATH`
+  - `--tsv-out PATH`
 
 Quick observations from the first matrix run:
 
@@ -62,7 +65,7 @@ Quick observations from the first matrix run:
 
 ## Next Recommended Steps
 
-1. Add CSV/TSV output (or file logging) to `scripts/benchmark_matrix.py` so baseline results can be diffed automatically.
+1. Add a timestamped output convention or run wrapper for `scripts/benchmark_matrix.py` so baseline files are easy to archive and compare.
 2. Start the joint transition + state CP-SAT work in `circuit_lm/train_cpsat.py` behind an opt-in flag or isolated function.
 3. Add a serialization benchmark comparing JSON save/load sizes and times before introducing a binary format.
 
@@ -71,4 +74,5 @@ Quick observations from the first matrix run:
 1. Re-run `py -3.12 -m pytest -q`
 2. Re-run `py -3.12 scripts/benchmark_small.py`
 3. Re-run `py -3.12 scripts/benchmark_matrix.py` (optional but recommended)
-4. Update the snapshot, results, and next steps with commit hashes and dates
+4. If needed, export `--csv-out` or `--tsv-out` for baseline comparison
+5. Update the snapshot, results, and next steps with commit hashes and dates
