@@ -35,7 +35,7 @@ from circuit_lm.metrics import (
     format_accuracy,
 )
 from circuit_lm.io import save_model, load_model
-from circuit_lm.cli import build_parser
+from circuit_lm.cli import build_parser, cmd_train
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -543,6 +543,42 @@ def test_cli_eval_parser_exposes_per_token_flags() -> None:
     ])
     assert args.per_token is True
     assert args.per_token_limit == 12
+
+
+def test_cli_train_cmd_rejects_unpaired_split_budgets(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    parser = build_parser()
+    args = parser.parse_args([
+        "train",
+        "--data", "data.txt",
+        "--transition_steps", "3",
+    ])
+
+    rc = cmd_train(args)
+
+    captured = capsys.readouterr()
+    assert rc == 1
+    assert "--transition_steps and --emission_steps" in captured.err
+
+
+def test_cli_train_cmd_rejects_partial_pda_explicit_budgets(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    parser = build_parser()
+    args = parser.parse_args([
+        "train",
+        "--data", "data.txt",
+        "--automaton", "pda",
+        "--transition_steps", "3",
+        "--emission_steps", "4",
+    ])
+
+    rc = cmd_train(args)
+
+    captured = capsys.readouterr()
+    assert rc == 1
+    assert "--stack_steps, --transition_steps, and --emission_steps" in captured.err
 
 
 def test_cli_rejects_negative_train_steps() -> None:
