@@ -567,13 +567,30 @@ def train_pda(
             transitions[(s, t)] = (s * HASH_PRIME + t + 1) % num_states
     transitions.update(learned_transitions)
 
+    # Expand per-token push/pop sets to full (state, token, stack_top) config triples.
+    # _simulate_and_collect and _simulate_and_collect_runtime are internal functions
+    # that still receive frozenset[int] and are left unchanged.
+    all_stack_tops = [STACK_EMPTY] + list(range(vocab_size))
+    push_configs: frozenset[tuple[int, int, int]] = frozenset(
+        (s, tok, st)
+        for tok in push_tokens
+        for s in range(num_states)
+        for st in all_stack_tops
+    )
+    pop_configs: frozenset[tuple[int, int, int]] = frozenset(
+        (s, tok, st)
+        for tok in pop_tokens
+        for s in range(num_states)
+        for st in all_stack_tops
+    )
+
     return PDACircuitLM(
         vocab_size=vocab_size,
         num_states=num_states,
         state_bits=state_bits,
         stack_depth=stack_depth,
-        push_tokens=push_tokens,
-        pop_tokens=pop_tokens,
+        push_configs=push_configs,
+        pop_configs=pop_configs,
         transitions=transitions,
         config_counts=config_counts,
         config_pred_tokens=config_pred_tokens,
