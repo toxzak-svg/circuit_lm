@@ -203,24 +203,50 @@ def train_joint_pda(
     ]
 
     # ------------------------------------------------------------------
-    # Decision variables: per-token stack operations
+    # Decision variables: per-config stack operations
+    # Flat index: s * PUSH_STRIDE_S + tok * ST_RANGE + st_enc
     # ------------------------------------------------------------------
-    is_push: list[cp_model.BoolVar] = [
-        model.new_bool_var(f"push_{tok}") for tok in range(vocab_size)
+    PUSH_STRIDE_S: int = vocab_size * ST_RANGE
+    PUSH_SIZE:     int = num_states * PUSH_STRIDE_S
+
+    is_push_flat: list[cp_model.BoolVar] = [
+        model.new_bool_var(f"push_{s}_{tok}_{st_enc}")
+        for s in range(num_states)
+        for tok in range(vocab_size)
+        for st_enc in range(ST_RANGE)
     ]
-    is_pop: list[cp_model.BoolVar] = [
-        model.new_bool_var(f"pop_{tok}") for tok in range(vocab_size)
+    is_pop_flat: list[cp_model.BoolVar] = [
+        model.new_bool_var(f"pop_{s}_{tok}_{st_enc}")
+        for s in range(num_states)
+        for tok in range(vocab_size)
+        for st_enc in range(ST_RANGE)
     ]
 
-    # A token cannot simultaneously be both PUSH and POP.
-    for tok in range(vocab_size):
-        model.add(is_push[tok] + is_pop[tok] <= 1)
+    # Mutual exclusivity per (state, token, stack_top) triple.
+    for _s in range(num_states):
+        for _tok in range(vocab_size):
+            for _st_enc in range(ST_RANGE):
+                _i = _s * PUSH_STRIDE_S + _tok * ST_RANGE + _st_enc
+                model.add(is_push_flat[_i] + is_pop_flat[_i] <= 1)
 
-    # Optional budget constraints on push/pop token counts.
-    if max_push is not None:
-        model.add(sum(is_push) <= max_push)
-    if max_pop is not None:
-        model.add(sum(is_pop) <= max_pop)
+    # Budget constraints: max_push / max_pop count distinct token IDs.
+    if max_push is not None or max_pop is not None:
+        tok_ever_pushes: list[cp_model.BoolVar] = [
+            model.new_bool_var(f"tok_push_{_tok}") for _tok in range(vocab_size)
+        ]
+        tok_ever_pops: list[cp_model.BoolVar] = [
+            model.new_bool_var(f"tok_pop_{_tok}") for _tok in range(vocab_size)
+        ]
+        for _tok in range(vocab_size):
+            for _s in range(num_states):
+                for _st_enc in range(ST_RANGE):
+                    _i = _s * PUSH_STRIDE_S + _tok * ST_RANGE + _st_enc
+                    model.add(is_push_flat[_i] <= tok_ever_pushes[_tok])
+                    model.add(is_pop_flat[_i]  <= tok_ever_pops[_tok])
+        if max_push is not None:
+            model.add(sum(tok_ever_pushes) <= max_push)
+        if max_pop is not None:
+            model.add(sum(tok_ever_pops) <= max_pop)
 
     # ------------------------------------------------------------------
     # Decision variables: emission table (flattened over configs)
@@ -252,8 +278,6 @@ def train_joint_pda(
         src = src_vars[occ_idx]
         dst = dst_vars[occ_idx]
         st  = st_vars[occ_idx]
-        push_tok = is_push[tok]
-        pop_tok  = is_pop[tok]
 
         # FSM initial state / chain
         if prev_occ_idx < 0:
@@ -264,20 +288,33 @@ def train_joint_pda(
         # FSM transition: dst = delta[src, tok]
         model.add_element(src, delta_cols[tok], dst)
 
-        # Stack top update after consuming tok
+        # Stack op lookup and stack top update
+        tok_offset: int = tok * ST_RANGE
+
         if prev_occ_idx < 0:
-            # Sequence start: initial stack is empty.
-            # PUSH → tok (push current token onto empty stack)
-            # POP  → EMPTY_ENC (pop from empty = noop; stack stays empty)
-            # NOOP → EMPTY_ENC
-            model.add(st == tok).only_enforce_if(push_tok)
-            model.add(st == EMPTY_ENC).only_enforce_if(push_tok.Not())
+            # Sequence start: src=0 (fixed), st_prev=EMPTY_ENC (fixed) → constant index.
+            _start_idx: int = 0 * PUSH_STRIDE_S + tok_offset + EMPTY_ENC
+            push_at_k: cp_model.BoolVar = is_push_flat[_start_idx]
+            pop_at_k:  cp_model.BoolVar = is_pop_flat[_start_idx]
+
+            model.add(st == tok).only_enforce_if(push_at_k)
+            model.add(st == EMPTY_ENC).only_enforce_if(push_at_k.Not())
         else:
-            # Non-start: carry forward, push, or pop.
+            # Non-start: src and st_prev are variables — use add_element.
             st_prev = st_vars[prev_occ_idx]
-            model.add(st == tok).only_enforce_if(push_tok)
-            model.add(st == EMPTY_ENC).only_enforce_if(pop_tok)
-            model.add(st == st_prev).only_enforce_if([push_tok.Not(), pop_tok.Not()])
+
+            op_idx = model.new_int_var(0, PUSH_SIZE - 1, f"op_idx_{occ_idx}")
+            model.add(op_idx == src * PUSH_STRIDE_S + tok_offset + st_prev)
+
+            push_at_k = model.new_bool_var(f"push_at_{occ_idx}")
+            model.add_element(op_idx, is_push_flat, push_at_k)
+
+            pop_at_k = model.new_bool_var(f"pop_at_{occ_idx}")
+            model.add_element(op_idx, is_pop_flat, pop_at_k)
+
+            model.add(st == tok).only_enforce_if(push_at_k)
+            model.add(st == EMPTY_ENC).only_enforce_if(pop_at_k)
+            model.add(st == st_prev).only_enforce_if([push_at_k.Not(), pop_at_k.Not()])
 
         # Config index (linear: constant * IntVar + IntVar is supported)
         model.add(cfg_vars[occ_idx] == dst * ST_RANGE + st)
@@ -357,11 +394,19 @@ def train_joint_pda(
     if status not in (cp_model.OPTIMAL, cp_model.FEASIBLE):
         return _hash_fallback(sequences, vocab_size, num_states, state_bits, stack_depth)
 
-    learned_push: frozenset[int] = frozenset(
-        tok for tok in range(vocab_size) if solver.value(is_push[tok])
+    learned_push_configs: frozenset[tuple[int, int, int]] = frozenset(
+        (s, tok, STACK_EMPTY if st_enc == EMPTY_ENC else st_enc)
+        for s in range(num_states)
+        for tok in range(vocab_size)
+        for st_enc in range(ST_RANGE)
+        if solver.value(is_push_flat[s * PUSH_STRIDE_S + tok * ST_RANGE + st_enc])
     )
-    learned_pop: frozenset[int] = frozenset(
-        tok for tok in range(vocab_size) if solver.value(is_pop[tok])
+    learned_pop_configs: frozenset[tuple[int, int, int]] = frozenset(
+        (s, tok, STACK_EMPTY if st_enc == EMPTY_ENC else st_enc)
+        for s in range(num_states)
+        for tok in range(vocab_size)
+        for st_enc in range(ST_RANGE)
+        if solver.value(is_pop_flat[s * PUSH_STRIDE_S + tok * ST_RANGE + st_enc])
     )
 
     learned_delta: dict[tuple[int, int], int] = {
@@ -404,8 +449,8 @@ def train_joint_pda(
         num_states=num_states,
         state_bits=state_bits,
         stack_depth=stack_depth,
-        push_tokens=learned_push,
-        pop_tokens=learned_pop,
+        push_configs=learned_push_configs,
+        pop_configs=learned_pop_configs,
         transitions=transitions,
         config_counts=config_counts,
         config_pred_tokens=config_pred_tokens,
@@ -460,8 +505,8 @@ def _hash_fallback(
         num_states=num_states,
         state_bits=state_bits,
         stack_depth=stack_depth,
-        push_tokens=frozenset(),
-        pop_tokens=frozenset(),
+        push_configs=frozenset(),
+        pop_configs=frozenset(),
         transitions=transitions,
         config_counts=config_counts,
         config_pred_tokens=config_pred_tokens,

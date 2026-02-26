@@ -79,24 +79,24 @@ def test_train_joint_pda_vocab_size_preserved(tiny_joint_pda: PDACircuitLM) -> N
 
 
 def test_train_joint_pda_push_pop_disjoint(tiny_joint_pda: PDACircuitLM) -> None:
-    assert tiny_joint_pda.push_tokens.isdisjoint(tiny_joint_pda.pop_tokens)
+    assert tiny_joint_pda.push_configs.isdisjoint(tiny_joint_pda.pop_configs)
 
 
 def test_train_joint_pda_push_pop_are_frozensets(tiny_joint_pda: PDACircuitLM) -> None:
-    assert isinstance(tiny_joint_pda.push_tokens, frozenset)
-    assert isinstance(tiny_joint_pda.pop_tokens, frozenset)
+    assert isinstance(tiny_joint_pda.push_configs, frozenset)
+    assert isinstance(tiny_joint_pda.pop_configs, frozenset)
 
 
 def test_train_joint_pda_push_tokens_in_vocab(tiny_joint_pda: PDACircuitLM) -> None:
-    for t in tiny_joint_pda.push_tokens:
-        assert isinstance(t, int)
-        assert 0 <= t < tiny_joint_pda.vocab_size
+    for s, tok, st in tiny_joint_pda.push_configs:
+        assert isinstance(tok, int)
+        assert 0 <= tok < tiny_joint_pda.vocab_size
 
 
 def test_train_joint_pda_pop_tokens_in_vocab(tiny_joint_pda: PDACircuitLM) -> None:
-    for t in tiny_joint_pda.pop_tokens:
-        assert isinstance(t, int)
-        assert 0 <= t < tiny_joint_pda.vocab_size
+    for s, tok, st in tiny_joint_pda.pop_configs:
+        assert isinstance(tok, int)
+        assert 0 <= tok < tiny_joint_pda.vocab_size
 
 
 def test_train_joint_pda_max_push_constraint() -> None:
@@ -108,7 +108,7 @@ def test_train_joint_pda_max_push_constraint() -> None:
         steps=4,
         max_push=1,
     )
-    assert len(model.push_tokens) <= 1
+    assert len({tok for (_, tok, _) in model.push_configs}) <= 1
 
 
 def test_train_joint_pda_max_pop_constraint() -> None:
@@ -120,7 +120,7 @@ def test_train_joint_pda_max_pop_constraint() -> None:
         steps=4,
         max_pop=1,
     )
-    assert len(model.pop_tokens) <= 1
+    assert len({tok for (_, tok, _) in model.pop_configs}) <= 1
 
 
 def test_train_joint_pda_max_push_zero_means_no_push() -> None:
@@ -132,7 +132,48 @@ def test_train_joint_pda_max_push_zero_means_no_push() -> None:
         steps=4,
         max_push=0,
     )
-    assert len(model.push_tokens) == 0
+    assert len(model.push_configs) == 0
+
+
+# ---------------------------------------------------------------------------
+# Config-conditioned push/pop fields (new formulation)
+# ---------------------------------------------------------------------------
+
+
+def test_train_joint_pda_push_configs_are_triples(tiny_joint_pda: PDACircuitLM) -> None:
+    """push_configs must be a frozenset of (int, int, int) triples."""
+    for triple in tiny_joint_pda.push_configs:
+        s, tok, st = triple
+        assert isinstance(s,   int)
+        assert isinstance(tok, int)
+        assert isinstance(st,  int)
+        assert 0 <= s < tiny_joint_pda.num_states
+        assert 0 <= tok < tiny_joint_pda.vocab_size
+        assert st == STACK_EMPTY or (0 <= st < tiny_joint_pda.vocab_size)
+
+
+def test_train_joint_pda_push_pop_configs_disjoint(tiny_joint_pda: PDACircuitLM) -> None:
+    """No triple may appear in both push_configs and pop_configs."""
+    assert tiny_joint_pda.push_configs.isdisjoint(tiny_joint_pda.pop_configs)
+
+
+def test_train_joint_pda_max_push_token_semantics() -> None:
+    """max_push=1 means at most 1 distinct token ID appears in push_configs."""
+    model = train_joint_pda(
+        sequences=BRACKET_SEQS, vocab_size=3, num_states=4,
+        stack_depth=1, steps=4, max_push=1,
+    )
+    push_tok_ids = {tok for (_, tok, _) in model.push_configs}
+    assert len(push_tok_ids) <= 1
+
+
+def test_train_joint_pda_max_push_zero_means_no_push_configs() -> None:
+    """max_push=0 means push_configs is empty."""
+    model = train_joint_pda(
+        sequences=BRACKET_SEQS, vocab_size=3, num_states=4,
+        stack_depth=1, steps=4, max_push=0,
+    )
+    assert len(model.push_configs) == 0
 
 
 # ---------------------------------------------------------------------------
@@ -331,8 +372,8 @@ def test_hash_fallback_no_push_pop_tokens() -> None:
         state_bits=2,
         stack_depth=1,
     )
-    assert len(model.push_tokens) == 0
-    assert len(model.pop_tokens) == 0
+    assert len(model.push_configs) == 0
+    assert len(model.pop_configs) == 0
 
 
 def test_hash_fallback_all_configs_have_stack_empty() -> None:

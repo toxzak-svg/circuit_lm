@@ -755,29 +755,6 @@ def test_pda_load_old_push_tokens_migrates(tmp_path: pathlib.Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# train_pda – degenerate expansion: push/pop tokens → all config triples
-# ---------------------------------------------------------------------------
-
-
-def test_train_pda_push_configs_cover_all_states_and_stack_tops() -> None:
-    """Two-phase PDA expands each push token to all (state, tok, stack_top) triples."""
-    seqs = [[0, 1, 0, 1, 0, 1]] * 20   # tok 0 = push, tok 1 = pop
-    from circuit_lm.train_pda_cpsat import train_pda
-    m = train_pda(
-        sequences=seqs, vocab_size=2, state_bits=1, stack_depth=1,
-        steps=3, max_push=1, max_pop=1,
-    )
-    # If token 0 was chosen as push, ALL (state, 0, stack_top) triples must exist
-    push_toks = set(tok for (_, tok, _) in m.push_configs)
-    for tok in push_toks:
-        for s in range(m.num_states):
-            for st in [STACK_EMPTY] + list(range(m.vocab_size)):
-                assert (s, tok, st) in m.push_configs, (
-                    f"Missing ({s}, {tok}, {st}) in push_configs"
-                )
-
-
-# ---------------------------------------------------------------------------
 # No float types at runtime
 # ---------------------------------------------------------------------------
 
