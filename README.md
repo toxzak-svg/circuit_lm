@@ -111,7 +111,7 @@ Text  ──▶  Tokenizer              char → int ID
            │     └─▶ train_joint_cpsat     TRUE JOINT: states as CP-SAT vars
            │
            └─▶ PDACircuitLM (PDA) config = (state, stack_top) ∈ int × int
-                 push_tokens / pop_tokens: frozenset[int]
+                 push_configs / pop_configs: frozenset[tuple[int,int,int]]
                  config_counts: (state, stack_top) → [count_per_token]
                  ├─▶ train_pda_cpsat       two-phase: stack-policy then emission
                  └─▶ train_joint_pda_cpsat TRUE JOINT: states + stack ops + emissions
@@ -159,12 +159,16 @@ PDA models extend the format with stack settings and per-config learned emission
 {
   "model_type": "pda",
   "stack_depth": 4,
-  "push_tokens": [40, 41],
-  "pop_tokens": [42, 43],
+  "push_configs": [[0, 40, -1], [1, 40, -1], [0, 41, -1]],
+  "pop_configs":  [[0, 42, 40], [1, 42, 40]],
   "config_counts": { "3,-1": [0, 2, 9, "..."], "7,40": [1, 0, 4, "..."] },
   "config_pred_tokens": { "3,-1": 2, "7,40": 9 }
 }
 ```
+
+Each `push_configs` / `pop_configs` entry is `[src_state, token, stack_top_before_op]`.
+`stack_top_before_op = -1` means the stack was empty (`STACK_EMPTY`).
+Old files with `push_tokens`/`pop_tokens` integer lists are automatically migrated on load.
 
 All numeric values are JSON integers.
 
@@ -176,4 +180,4 @@ All numeric values are JSON integers.
 - [ ] Compressed binary model format (MessagePack or similar)
 - [ ] Multi-pass CP-SAT for larger state spaces
 - [ ] Streaming data loading for large corpora
-- [ ] Per-(state, token, stack_top) stack operations (currently token-only)
+- [x] Per-(state, token, stack_top) stack operations — `push_configs`/`pop_configs` (`frozenset[tuple[int,int,int]]`) throughout; `stack_op(state, token, stack_top)` dispatches on the full config triple

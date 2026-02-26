@@ -5,15 +5,17 @@ Last updated: 2026-02-25
 ## Snapshot
 
 - Repo state: working tree was clean when this status snapshot was created.
-- Recent validation commit: `16ad53e` (`Add true joint CP-SAT FSM learning and depth-generalization experiment scripts`)
+- Recent validation commit: `65d9525` (`fix: update scripts and cli to use push_configs/pop_configs API`)
 - Python validation target: `3.12`
 - Packaging: editable install works with `py -3.12 -m pip install --user -e .[dev]`
 
 ## What Is Working
 
-- Full test suite passes: `175 passed` via `py -3.12 -m pytest -q`
+- Full test suite passes: `184 passed` via `py -3.12 -m pytest -q`
 - **True joint FSM solver** (`train_joint_cpsat.train_joint`): states, transitions, and emissions as free CP-SAT decision variables; objective = prediction accuracy directly
-- **True joint PDA solver** (`train_joint_pda_cpsat.train_joint_pda`): states, per-token push/pop policy, and per-config emissions jointly solved in a single CP-SAT model
+- **True joint PDA solver** (`train_joint_pda_cpsat.train_joint_pda`): states, per-config `(state, token, stack_top)` push/pop policy, and per-config emissions jointly solved in a single CP-SAT model
+- **Config-conditioned stack operations**: `PDACircuitLM` now stores `push_configs`/`pop_configs` as `frozenset[tuple[int,int,int]]`; `stack_op(state, token, stack_top)` dispatches on the full config triple. Two-phase PDA uses degenerate expansion (token-ID → all state/stack-top combos); joint PDA uses `S × V × ST_RANGE` CP-SAT boolean variables.
+- JSON migration shim: old `push_tokens`/`pop_tokens` fields auto-expand to degenerate config triples on load.
 - CLI train/eval/sample flows run with the new split CP-SAT budget flags
 - Runtime CLI validation is covered for:
   - unpaired `--transition_steps` / `--emission_steps`
@@ -63,7 +65,6 @@ Quick observations from the first matrix run:
 
 ## Open Gaps (from README TODOs)
 
-- Per-(state, token, stack_top) stack operations: current PDA assigns push/pop by token ID only; a richer formulation would condition on the full config
 - Compressed binary model format (JSON remains the only tracked serialization path)
 - Multi-pass CP-SAT scaling improvements for larger state spaces
 - Streaming / stride-aware data loading for corpora larger than RAM
@@ -75,8 +76,9 @@ Quick observations from the first matrix run:
 | `train_joint_cpsat` (FSM) | ≤ 4 000 | ≤ 16 | ≤ 64 |
 | `train_joint_pda_cpsat` (PDA) | ≤ 2 000 | ≤ 8 | ≤ 32 |
 
-The PDA joint solver is harder because shared `is_push`/`is_pop` decision
-variables couple all occurrences of each token simultaneously.
+The PDA joint solver is harder because the `S × V × ST_RANGE` config-conditioned
+push/pop boolean variables couple all occurrences of each (state, token, stack_top)
+triple simultaneously.
 
 ## Depth-Generalization Experiment (Four-Model Comparison, 2026-02-25)
 
@@ -118,13 +120,23 @@ vs 42.78% FSM, 39.05% PPM).
 
 ### Joint-PDA scalability note
 
-With 300 training sequences the joint PDA still finds no stack (`push_tokens=[]`). A 150-seq run
+With 300 training sequences the joint PDA still finds no stack (`push_configs` is empty). A 150-seq run
 also produced no stack. This is consistent with the T_total ≤ 2000 limit — the search space is
 too large for the 20 s budget to discover the push/pop structure.
 
+## Config-Conditioned Stack Operations (2026-02-25)
+
+Commits: `5d2c373` → `65d9525` (Tasks 1–5 of joint-PDA verification + config-ops plan).
+
+- `push_tokens`/`pop_tokens` (`frozenset[int]`) replaced by `push_configs`/`pop_configs` (`frozenset[tuple[int,int,int]]`) throughout `pda.py`, `io.py`, `train_pda_cpsat.py`, `train_joint_pda_cpsat.py`, `cli.py`, and all scripts.
+- `stack_op(state, token, stack_top)` now dispatches on the full `(src_state, token, stack_top_before_op)` triple.
+- Two-phase PDA (`train_pda`): expands learned token-ID sets to all `(state, tok, stack_top)` triples at output (degenerate but correct).
+- Joint PDA (`train_joint_pda`): uses `S × V × ST_RANGE` CP-SAT boolean variables — `is_push_flat` and `is_pop_flat` — with `add_element` lookup per occurrence. `max_push`/`max_pop` budget constraints count distinct token IDs via auxiliary `tok_ever_pushes`/`tok_ever_pops` booleans.
+- JSON migration shim: old `push_tokens`/`pop_tokens` integer-list format auto-expands to degenerate config triples on load.
+
 ## Next Recommended Steps
 
-1. Run joint-PDA experiment with a reduced vocabulary or smaller sequences to stay within T_total ≤ 2000 and verify stack discovery at that scale.
+1. Run joint-PDA experiment with a reduced vocabulary or smaller sequences to stay within T_total ≤ 2000 and verify stack discovery at that scale (see `scripts/verify_joint_pda_small.py` — Task 6 of the plan).
 2. Add a serialization benchmark comparing JSON save/load sizes and times before introducing a binary format.
 
 ## How To Update This File
