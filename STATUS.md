@@ -1,17 +1,17 @@
 # Project Status
 
-Last updated: 2026-02-25
+Last updated: 2026-02-25 (rev 2)
 
 ## Snapshot
 
 - Repo state: working tree was clean when this status snapshot was created.
-- Recent validation commit: `65d9525` (`fix: update scripts and cli to use push_configs/pop_configs API`)
+- Recent validation commit: `c0f46e6` (`feat: add benchmark_serialization script and tests`)
 - Python validation target: `3.12`
 - Packaging: editable install works with `py -3.12 -m pip install --user -e .[dev]`
 
 ## What Is Working
 
-- Full test suite passes: `184 passed` via `py -3.12 -m pytest -q`
+- Full test suite passes: `199 passed` via `py -3.12 -m pytest -q`
 - **True joint FSM solver** (`train_joint_cpsat.train_joint`): states, transitions, and emissions as free CP-SAT decision variables; objective = prediction accuracy directly
 - **True joint PDA solver** (`train_joint_pda_cpsat.train_joint_pda`): states, per-config `(state, token, stack_top)` push/pop policy, and per-config emissions jointly solved in a single CP-SAT model
 - **Config-conditioned stack operations**: `PDACircuitLM` now stores `push_configs`/`pop_configs` as `frozenset[tuple[int,int,int]]`; `stack_op(state, token, stack_top)` dispatches on the full config triple. Two-phase PDA uses degenerate expansion (token-ID → all state/stack-top combos); joint PDA uses `S × V × ST_RANGE` CP-SAT boolean variables.
@@ -134,10 +134,66 @@ Commits: `5d2c373` → `65d9525` (Tasks 1–5 of joint-PDA verification + config
 - Joint PDA (`train_joint_pda`): uses `S × V × ST_RANGE` CP-SAT boolean variables — `is_push_flat` and `is_pop_flat` — with `add_element` lookup per occurrence. `max_push`/`max_pop` budget constraints count distinct token IDs via auxiliary `tok_ever_pushes`/`tok_ever_pops` booleans.
 - JSON migration shim: old `push_tokens`/`pop_tokens` integer-list format auto-expands to degenerate config triples on load.
 
+## Joint-PDA Small-Scale Verification (Task 6, 2026-02-25)
+
+Command:
+
+```
+py -3.12 scripts/verify_joint_pda_small.py
+```
+
+Settings: train depth ≤ 3, 100 train seqs (T_total=1168), 30 test seqs per depth, seed=42.
+Joint-PDA: 4 states, 30 s budget, max_push=1, max_pop=1. PDA-2ph: 4 states, 20 s budget.
+
+```
+  jpda push_tokens=[0]  pop_tokens=[]
+  [PASS] joint-PDA discovered stack
+  pda  push_tokens=[0]  pop_tokens=[1]
+```
+
+| depth | PDA-2ph | PDA-jt |
+|-------|---------|--------|
+| 3     | 44.20%  | 50.00% |
+| 4*    | 49.85%  | 50.00% |
+| 5*    | 51.08%  | 50.00% |
+| 6*    | 52.98%  | 50.00% |
+
+Key observations:
+
+- **Stack discovery confirmed** at T_total=1168 — joint-PDA found push_tokens=[0] (`(`), satisfying the `[PASS]` condition.
+- **Partial discovery**: POP token not learned in 30 s. The solver found the push rule but not the pop rule, leaving joint-PDA at a 50% plateau (predicts a fixed token regardless of depth).
+- **PDA-2ph correctly finds push=[0] pop=[1]** and shows the expected OOD improvement (44% → 53%).
+- **Interpretation**: push discovery is easier (every `(` unconditionally increases depth); pop discovery requires correlating `)` with the non-empty stack state. More budget or a smaller vocabulary may be needed for the joint solver to find both operations simultaneously.
+
+## JSON Serialization Benchmark (2026-02-25)
+
+Command:
+
+```
+py -3.12 scripts/benchmark_serialization.py
+```
+
+Results (seed=42, steps=3 s training per model):
+
+```
+label     type  states  vocab     bytes  save_ms  load_ms  ok
+fsm-sm    fsm        8     30      7020        1        0   1
+pda-sm    pda        8     30    377610       23        6   1
+pda-md    pda       16     30    739648       42       10   1
+```
+
+Notes:
+
+- All three roundtrip checks pass (`ok=1`): save → load preserves transitions, configs, push/pop sets exactly.
+- PDA JSON is ~54× larger than FSM JSON at the same state/vocab count, due to the `config_counts` field
+  storing per-`(state, stack_top)` token histograms. A compressed binary format (MessagePack) would
+  significantly reduce PDA model size.
+- Timings are integer ms. Sub-millisecond load for FSM rounds to 0.
+
 ## Next Recommended Steps
 
-1. Run joint-PDA experiment with a reduced vocabulary or smaller sequences to stay within T_total ≤ 2000 and verify stack discovery at that scale (see `scripts/verify_joint_pda_small.py` — Task 6 of the plan).
-2. Add a serialization benchmark comparing JSON save/load sizes and times before introducing a binary format.
+1. Investigate joint-PDA pop discovery: try longer budget (60–120 s) or smaller training set (50 seqs) to confirm both push and pop are learned simultaneously. The partial result (push only) suggests the solver needs more time to commit to the correlated pop policy.
+2. Introduce compressed binary format (MessagePack) using the serialization benchmark as baseline. PDA-sm at 377 KB JSON → target ≈ 20–40 KB binary.
 
 ## How To Update This File
 
