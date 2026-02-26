@@ -268,7 +268,7 @@ def _load_pda(data: dict) -> PDACircuitLM:
         )
         pop_configs: frozenset[tuple[int, int, int]] = frozenset(
             (int(triple[0]), int(triple[1]), int(triple[2]))
-            for triple in data["pop_configs"]
+            for triple in data.get("pop_configs", [])
         )
     else:
         # Migration shim: old format with push_tokens / pop_tokens as int lists.

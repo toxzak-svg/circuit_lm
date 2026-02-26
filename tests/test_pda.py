@@ -746,6 +746,10 @@ def test_pda_load_old_push_tokens_migrates(tmp_path: pathlib.Path) -> None:
     for s in range(2):
         for st in [STACK_EMPTY, 0, 1, 2]:
             assert (s, 0, st) in loaded.push_configs
+    # pop token = 1 should also cover all (state, tok=1, stack_top) combos
+    for s in range(2):
+        for st in [STACK_EMPTY, 0, 1, 2]:
+            assert (s, 1, st) in loaded.pop_configs
     # No push_tokens attribute
     assert not hasattr(loaded, "push_tokens")
 
