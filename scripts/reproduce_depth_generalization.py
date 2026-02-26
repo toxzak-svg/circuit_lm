@@ -304,7 +304,9 @@ def run(
     )
 
     if not quiet:
-        print(f"  push_tokens={sorted(pda_model.push_tokens)}  pop_tokens={sorted(pda_model.pop_tokens)}")
+        _push = sorted({tok for (_, tok, _) in pda_model.push_configs})
+        _pop  = sorted({tok for (_, tok, _) in pda_model.pop_configs})
+        print(f"  push_tokens={_push}  pop_tokens={_pop}")
         print(f"Training joint-PDA (state_bits={JPDA_STATE_BITS}, stack_depth={JPDA_STACK_DEPTH}, steps={JPDA_STEPS}s) ...")
     jpda_model = train_joint_pda(
         sequences=train_data,
@@ -318,7 +320,9 @@ def run(
     )
 
     if not quiet:
-        print(f"  push_tokens={sorted(jpda_model.push_tokens)}  pop_tokens={sorted(jpda_model.pop_tokens)}")
+        _jpush = sorted({tok for (_, tok, _) in jpda_model.push_configs})
+        _jpop  = sorted({tok for (_, tok, _) in jpda_model.pop_configs})
+        print(f"  push_tokens={_jpush}  pop_tokens={_jpop}")
         print(f"Training FSM  (state_bits={FSM_STATE_BITS}, context_len={FSM_CONTEXT_LEN}, steps={FSM_STEPS}s) ...")
     fsm_model = train_fsm(
         sequences=train_data,

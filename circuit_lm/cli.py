@@ -157,10 +157,10 @@ def cmd_train(args: argparse.Namespace) -> int:
             emission_steps=emission_steps,
             refinement_rounds=args.refinement_rounds,
         )
-        push_n = len(model.push_tokens)
-        pop_n  = len(model.pop_tokens)
+        push_n = len({tok for (_, tok, _) in model.push_configs})
+        pop_n  = len({tok for (_, tok, _) in model.pop_configs})
         print(f"[train] PDA configs={len(model.config_counts)}"
-              f"  push_tokens={push_n}  pop_tokens={pop_n}")
+              f"  push_token_ids={push_n}  pop_token_ids={pop_n}")
     elif automaton == "ppm":
         from circuit_lm.train_ppm import train_ppm
         print(f"[train] PPM order={args.order}  (no CP-SAT; pure counting)")
