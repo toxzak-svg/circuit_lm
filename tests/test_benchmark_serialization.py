@@ -12,6 +12,7 @@ import pytest
 
 sys.path.insert(0, str(pathlib.Path(__file__).parent.parent / "scripts"))
 from benchmark_serialization import run_benchmark  # noqa: E402
+from circuit_lm.io import has_msgpack
 
 
 @pytest.fixture()
@@ -19,12 +20,23 @@ def bench_rows(tmp_path: pathlib.Path):
     return run_benchmark(seed=42, tmp_dir=tmp_path)
 
 
-def test_benchmark_returns_three_rows(bench_rows):
-    assert len(bench_rows) == 3
+def test_benchmark_returns_expected_row_count(bench_rows):
+    expected_formats = 2 if has_msgpack() else 1
+    assert len(bench_rows) == 3 * expected_formats
 
 
 def test_benchmark_row_has_required_keys(bench_rows):
-    required = {"label", "type", "states", "vocab", "bytes", "save_ms", "load_ms", "roundtrip_ok"}
+    required = {
+        "label",
+        "type",
+        "format",
+        "states",
+        "vocab",
+        "bytes",
+        "save_ms",
+        "load_ms",
+        "roundtrip_ok",
+    }
     for row in bench_rows:
         assert required <= row.keys(), f"missing keys in row {row['label']!r}"
 
@@ -58,6 +70,11 @@ def test_benchmark_row_types_are_fsm_or_pda(bench_rows):
         assert row["type"] in ("fsm", "pda")
 
 
+def test_benchmark_format_is_json_or_msgpack(bench_rows):
+    for row in bench_rows:
+        assert row["format"] in ("json", "msgpack")
+
+
 def test_benchmark_labels_are_unique(bench_rows):
-    labels = [r["label"] for r in bench_rows]
-    assert len(labels) == len(set(labels))
+    labels_with_format = [f"{r['label']}:{r['format']}" for r in bench_rows]
+    assert len(labels_with_format) == len(set(labels_with_format))

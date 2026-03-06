@@ -1,5 +1,7 @@
 # circuit_lm
 
+[![CI](https://github.com/toxzak-svg/circuit_lm/actions/workflows/ci.yml/badge.svg)](https://github.com/toxzak-svg/circuit_lm/actions/workflows/ci.yml)
+
 A **finite-state circuit language model** trained with [OR-Tools CP-SAT](https://developers.google.com/optimization/reference/python/sat/python/cp_model).
 
 Current project snapshot and next milestones: see [`STATUS.md`](STATUS.md).
@@ -18,6 +20,24 @@ Current project snapshot and next milestones: see [`STATUS.md`](STATUS.md).
 ```bash
 pip install -e ".[dev]"
 ```
+
+## Reproduce Core Claims
+
+Depth generalization (PDA vs FSM vs PPM):
+
+```bash
+python3 scripts/reproduce_depth_generalization.py
+```
+
+Expected pattern: on out-of-distribution depths, PDA-2ph improves while FSM and PPM degrade.
+
+Serialization footprint (JSON vs MessagePack):
+
+```bash
+python3 scripts/benchmark_serialization.py
+```
+
+If `msgpack` is unavailable, the script runs JSON rows only and prints a note.
 
 ## CLI
 
@@ -93,7 +113,19 @@ Key test modules:
 ## Benchmark
 
 ```bash
-python scripts/benchmark_small.py
+python3 scripts/benchmark_small.py
+```
+
+Joint-PDA stack discovery sweep:
+
+```bash
+python3 scripts/sweep_jpda_budget.py
+```
+
+Serialization benchmark:
+
+```bash
+python3 scripts/benchmark_serialization.py
 ```
 
 ## Architecture
@@ -126,7 +158,24 @@ Text  ──▶  Tokenizer              char → int ID
 | `train_pda_cpsat` | CP-SAT (2-phase) | hash-fixed | co-occurrence score | emission argmax |
 | `train_joint_pda_cpsat` | CP-SAT (joint) | **free vars** | **accuracy-driven** | **prediction accuracy** |
 
-## Model format (JSON)
+## Model formats (JSON + MessagePack)
+
+JSON path:
+
+```python
+from circuit_lm.io import save_model, load_model
+```
+
+MessagePack path:
+
+```python
+from circuit_lm.io import save_msgpack, load_msgpack
+```
+
+MessagePack uses compact integer keys for sparse maps (`transitions`,
+`config_counts`, and config triples) to reduce PDA artifact size.
+
+### JSON format
 
 FSM example (character tokenizer + learned emission table):
 
@@ -177,7 +226,7 @@ All numeric values are JSON integers.
 - [x] Joint FSM learning via CP-SAT — `train_joint_cpsat.train_joint`: states, transitions, and emissions as free decision variables; objective = prediction accuracy
 - [x] Joint PDA learning via CP-SAT — `train_joint_pda_cpsat.train_joint_pda`: states, push/pop policy, and config emissions jointly in a single model
 - [x] Iterative state-assignment refinement (EM-like re-estimation loop over transition / emission counts)
-- [ ] Compressed binary model format (MessagePack or similar)
+- [x] Compressed binary model format (MessagePack): `save_msgpack` / `load_msgpack` + paired JSON/msgpack serialization benchmark
 - [ ] Multi-pass CP-SAT for larger state spaces
 - [ ] Streaming data loading for large corpora
 - [x] Per-(state, token, stack_top) stack operations — `push_configs`/`pop_configs` (`frozenset[tuple[int,int,int]]`) throughout; `stack_op(state, token, stack_top)` dispatches on the full config triple
