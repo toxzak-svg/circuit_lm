@@ -21,6 +21,28 @@ Current project snapshot and next milestones: see [`STATUS.md`](STATUS.md).
 pip install -e ".[dev]"
 ```
 
+## Running the CLI
+
+After installing, use either:
+
+- **`circuit-lm`** — if the installed script is on your PATH (e.g. `circuit-lm train ...`).
+- **`py -3.12 -m circuit_lm.cli`** — run the CLI as a module (recommended on Windows with the py launcher so the correct Python is used):
+
+```bash
+py -3.12 -m circuit_lm.cli train --data data.txt --out model.json
+py -3.12 -m circuit_lm.cli eval --data data.txt --model model.json
+py -3.12 -m circuit_lm.cli sample --prompt "Hello" --model model.json
+py -3.12 -m circuit_lm.cli chat --model chat_model.json
+```
+
+Using `py -3.12 circuit-lm` can fail (Python may look for a file named `circuit-lm`); use `py -3.12 -m circuit_lm.cli` instead.
+
+**On Windows (PowerShell):** `\` is not line continuation. Use one line, or break lines with backtick `` ` ``:
+
+```powershell
+circuit-lm train --data chat.txt --out chat_model.json --vocab_size 256 --state_bits 5 --context_len 12 --transition_steps 20 --emission_steps 20
+```
+
 ## Reproduce Core Claims
 
 Depth generalization (PDA vs FSM vs PPM):

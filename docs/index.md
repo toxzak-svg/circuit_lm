@@ -18,6 +18,7 @@ CircuitLM is a language modeling system that uses finite-state machines (FSM), p
 - [Installation](installation.md)
 - [Architecture Overview](architecture.md)
 - [CLI Reference](cli.md)
+- [Chat model](chat.md)
 - [API Reference](api/)
 - [Examples](examples/)
 - [Benchmarks](benchmarks.md)

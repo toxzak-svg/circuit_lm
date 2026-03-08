@@ -261,6 +261,57 @@ def cmd_sample(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_chat(args: argparse.Namespace) -> int:
+    """Interactive chat using a trained model (User: / Assistant: format)."""
+    from circuit_lm.chat import (
+        ASSISTANT_PREFIX,
+        USER_PREFIX,
+        generate_reply,
+        prompt_for_assistant_reply,
+    )
+    from circuit_lm.io import load_model
+
+    print(
+        f"[chat] model={args.model!r}  max_tokens={args.max_tokens}  seed={args.seed}"
+    )
+    model, tokenizer = load_model(args.model)
+
+    turns: list[tuple[str, str]] = []
+    print(USER_PREFIX, end="", flush=True)
+
+    while True:
+        try:
+            user_line = input()
+        except EOFError:
+            break
+        if not user_line.strip():
+            continue
+        turns.append(("user", user_line))
+
+        prompt_str = prompt_for_assistant_reply(turns, system_preamble=args.system)
+        prompt_ids = tokenizer.encode(prompt_str)
+
+        stop_sequence = tokenizer.encode("\n\n") if args.paragraph else None
+        reply_ids = generate_reply(
+            model=model,
+            tokenizer=tokenizer,
+            prompt_ids=prompt_ids,
+            max_tokens=args.max_tokens,
+            seed=args.seed,
+            stop_sequence=stop_sequence,
+            top_k=args.top_k,
+            repeat_penalty_div=args.repeat_penalty_div,
+            repeat_window=args.repeat_window,
+        )
+        reply_text = tokenizer.decode(reply_ids)
+        turns.append(("assistant", reply_text))
+
+        print(ASSISTANT_PREFIX + reply_text)
+        print()
+        print(USER_PREFIX, end="", flush=True)
+    return 0
+
+
 # ---------------------------------------------------------------------------
 # Argument parser
 # ---------------------------------------------------------------------------
@@ -406,6 +457,36 @@ def build_parser() -> argparse.ArgumentParser:
         help="Penalise tokens seen in the last N tokens (0 = full history if penalty enabled).",
     )
     p_sample.set_defaults(func=cmd_sample)
+
+    # -- chat ----------------------------------------------------------------
+    p_chat = sub.add_parser("chat", help="Interactive chat (User: / Assistant: format).")
+    p_chat.add_argument("--model", default="model.json", metavar="PATH",
+                        help="Model JSON path (default: model.json).")
+    p_chat.add_argument("--max_tokens", type=_int_ge_0, default=128, metavar="M",
+                        help="Max tokens per reply (default: 128).")
+    p_chat.add_argument("--seed", type=int, default=42, metavar="SEED",
+                        help="Random seed (default: 42).")
+    p_chat.add_argument(
+        "--top_k", type=_int_ge_0, default=0, metavar="K",
+        help="Sampling top-k (0 disables).",
+    )
+    p_chat.add_argument(
+        "--repeat_penalty_div", type=_int_ge_1, default=1, metavar="D",
+        help="Repetition penalty divisor (1 disables).",
+    )
+    p_chat.add_argument(
+        "--repeat_window", type=_int_ge_0, default=0, metavar="N",
+        help="Repetition penalty window (0 = full history).",
+    )
+    p_chat.add_argument(
+        "--system", default=None, metavar="TEXT",
+        help="System preamble for conversationalist behavior (default: brief helpful assistant). Use '' to disable.",
+    )
+    p_chat.add_argument(
+        "--paragraph", action="store_true",
+        help="Allow multi-sentence replies (stop at double newline).",
+    )
+    p_chat.set_defaults(func=cmd_chat)
 
     return parser
 

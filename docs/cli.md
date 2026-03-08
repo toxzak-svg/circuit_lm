@@ -1,6 +1,6 @@
 # CLI Reference
 
-CircuitLM provides a command-line interface with three main commands: `train`, `eval`, and `sample`.
+CircuitLM provides a command-line interface with four main commands: `train`, `eval`, `sample`, and `chat`. See [Chat](chat.md) for training and using a chat model.
 
 ## Basic Usage
 
@@ -94,6 +94,25 @@ circuit-lm sample \
 | `--top_k` | int | 0 | Keep top-K weights (0 disables) |
 | `--repeat_penalty_div` | int | 1 | Divide repeated weights by D |
 | `--repeat_window` | int | 0 | Penalize tokens in last N positions |
+
+### chat
+
+Interactive chat (User: / Assistant: format). The model must be trained on chat-style text; see [Chat](chat.md).
+
+```bash
+circuit-lm chat --model chat_model.json --max_tokens 128 --seed 42
+```
+
+#### Options
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `--model` | PATH | model.json | Model JSON path |
+| `--max_tokens` | int | 128 | Max tokens per reply |
+| `--seed` | int | 42 | Random seed |
+| `--top_k` | int | 0 | Sampling top-k (0 disables) |
+| `--repeat_penalty_div` | int | 1 | Repetition penalty divisor |
+| `--repeat_window` | int | 0 | Repetition penalty window |
 
 ## Examples
 
