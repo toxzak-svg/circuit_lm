@@ -1,6 +1,6 @@
 # Project Status
 
-Last updated: 2026-02-25 (rev 2)
+Last updated: 2026-03-08 (rev 3)
 
 ## Snapshot
 
@@ -65,7 +65,6 @@ Quick observations from the first matrix run:
 
 ## Open Gaps (from README TODOs)
 
-- Compressed binary model format (JSON remains the only tracked serialization path)
 - Multi-pass CP-SAT scaling improvements for larger state spaces
 - Streaming / stride-aware data loading for corpora larger than RAM
 
@@ -173,27 +172,54 @@ Command:
 py -3.12 scripts/benchmark_serialization.py
 ```
 
+The script now runs both JSON and MessagePack per model (see MessagePack section below for full table).
+Original JSON-only notes: all roundtrip checks pass; PDA JSON is ~54× larger than FSM at same state/vocab
+due to `config_counts`. Timings are integer ms.
+
+## Pop Discovery Sweep (2026-03-08)
+
+Command:
+
+```
+py -3.12 scripts/sweep_jpda_budget.py --train-seqs 50 --steps 30 60
+```
+
+Smoke run (2 combos, seed=42):
+
+| train_seqs | steps | T_total | push | pop | full |
+|------------|-------|---------|------|-----|------|
+| 50         | 30    | 580     | YES  | no  | no   |
+| 50         | 60    | 580     | YES  | YES | YES  |
+
+- **Full stack discovery achieved**: (50, 60) found both push and pop (1/2 combos in this run).
+- **Minimum budget in this sweep**: (train_seqs=50, steps=60 s) is sufficient for the joint solver to learn both operations at T_total=580.
+- At 30 s only push was discovered; 60 s allowed the solver to commit to the correlated pop policy.
+
+## MessagePack Binary Format (2026-03-08)
+
+`circuit_lm.io` provides `save_msgpack` / `load_msgpack`; `scripts/benchmark_serialization.py` reports both JSON and msgpack rows.
+
 Results (seed=42, steps=3 s training per model):
 
 ```
-label     type  states  vocab     bytes  save_ms  load_ms  ok
-fsm-sm    fsm        8     30      7020        1        0   1
-pda-sm    pda        8     30    377610       23        6   1
-pda-md    pda       16     30    739648       42       10   1
+label     type  fmt      states  vocab     bytes  save_ms  load_ms  ok
+----------------------------------------------------------------------
+fsm-sm    fsm   json          8     30      7020        2        0   1
+fsm-sm    fsm   msgpack       8     30      1072        0        0   1
+pda-sm    pda   json          8     30    377610       41       10   1
+pda-sm    pda   msgpack       8     30     26680        5        6   1
+pda-md    pda   json         16     30    739648       58       17   1
+pda-md    pda   msgpack      16     30     51778       10       38   1
+----------------------------------------------------------------------
 ```
 
-Notes:
-
-- All three roundtrip checks pass (`ok=1`): save → load preserves transitions, configs, push/pop sets exactly.
-- PDA JSON is ~54× larger than FSM JSON at the same state/vocab count, due to the `config_counts` field
-  storing per-`(state, stack_top)` token histograms. A compressed binary format (MessagePack) would
-  significantly reduce PDA model size.
-- Timings are integer ms. Sub-millisecond load for FSM rounds to 0.
+- All six roundtrip checks pass (`ok=1`).
+- **Compression ratio (PDA)**: PDA-sm msgpack 26,680 bytes ÷ JSON 377,610 ≈ 7.1% (~14× smaller). PDA-md 51,778 ÷ 739,648 ≈ 7.0%. Binary format is well within the earlier 20–40 KB target for PDA-sm.
 
 ## Next Recommended Steps
 
-1. Investigate joint-PDA pop discovery: try longer budget (60–120 s) or smaller training set (50 seqs) to confirm both push and pop are learned simultaneously. The partial result (push only) suggests the solver needs more time to commit to the correlated pop policy.
-2. Introduce compressed binary format (MessagePack) using the serialization benchmark as baseline. PDA-sm at 377 KB JSON → target ≈ 20–40 KB binary.
+1. Consider extending `load_model` to auto-detect JSON vs msgpack by file extension (e.g. `.json` vs `.msgpack`).
+2. If joint-PDA pop is still not found at 120 s in other settings, investigate solver warm-start or constraint relaxation.
 
 ## How To Update This File
 
