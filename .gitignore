@@ -15,6 +15,7 @@ env/
 
 # Large files: PyTorch checkpoints, big data, exports
 *.pt
+huoe_out/
 big_output.txt
 chat_data_500k.txt
 chat_data_full.txt
