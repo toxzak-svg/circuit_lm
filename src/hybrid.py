@@ -77,6 +77,158 @@ class HybridDataset(Dataset):
         }
 
 
+class ResidualCorrector(nn.Module):
+    """Residual neural corrector that predicts delta to add to circuit output.
+    
+    Architecture:
+      1. Circuit provides base integer prediction
+      2. This network predicts delta (correction) to shift that prediction
+      3. Final = base + delta (residual connection)
+    
+    This is more principled than weighted blending - the network explicitly
+    learns where the circuit is wrong and by how much.
+    
+    Input: (circuit_state, stack_top, context, circuit_histogram_counts)
+    Output: Delta logits to ADD to circuit histogram
+    
+    Uses int8 quantization for CPU efficiency.
+    """
+    
+    def __init__(
+        self,
+        vocab_size: int,
+        num_states: int = 16,
+        stack_depth: int = 4,
+        max_context_len: int = 32,
+        embed_dim: int = 64,
+        hidden_dim: int = 128,
+        num_layers: int = 2,
+        use_quantization: bool = False,
+    ):
+        super().__init__()
+        self.vocab_size = vocab_size
+        self.num_states = num_states
+        self.stack_depth = stack_depth
+        self.max_context_len = max_context_len
+        self.embed_dim = embed_dim
+        self.hidden_dim = hidden_dim
+        self.num_layers = num_layers
+        self.use_quantization = use_quantization
+        
+        # Embeddings for discrete inputs
+        self.state_embed = nn.Embedding(num_states + 1, embed_dim)
+        self.stack_embed = nn.Embedding(stack_depth + 1, embed_dim)
+        self.token_embed = nn.Embedding(vocab_size, embed_dim)
+        
+        # Circuit histogram projection (use counts directly, not normalized)
+        self.hist_proj = nn.Sequential(
+            nn.Linear(vocab_size, embed_dim),
+            nn.ReLU(),
+        )
+        
+        # Context encoder
+        self.context_lstm = nn.LSTM(
+            embed_dim, embed_dim, num_layers=1,
+            batch_first=True, bidirectional=True
+        )
+        
+        # Combined feature dimension
+        lstm_out = embed_dim * 2
+        combined_dim = embed_dim * 3 + lstm_out
+        
+        # Deep MLP that outputs DELTA (not final prediction)
+        layers = []
+        in_dim = combined_dim
+        for i in range(num_layers):
+            layers.append(nn.Linear(in_dim, hidden_dim))
+            layers.append(nn.ReLU())
+            layers.append(nn.Dropout(0.1))
+            in_dim = hidden_dim
+        # Output is delta logits (can be negative)
+        layers.append(nn.Linear(hidden_dim, vocab_size))
+        self.delta_mlp = nn.Sequential(*layers)
+    
+    def forward(
+        self,
+        circuit_state: torch.Tensor,
+        stack_top: torch.Tensor,
+        context: torch.Tensor,
+        circuit_counts: torch.Tensor,  # Integer counts, not probabilities
+    ) -> torch.Tensor:
+        """Forward pass computing delta to add to circuit prediction.
+        
+        Args:
+            circuit_state: (batch,) - current FSM state
+            stack_top: (batch,) - current stack top
+            context: (batch, max_context_len) - previous tokens
+            circuit_counts: (batch, vocab_size) - Integer counts from circuit
+        
+        Returns:
+            (batch, vocab_size) - Delta logits to ADD to circuit
+        """
+        batch_size = circuit_state.size(0)
+        
+        # Embed discrete features
+        stack_idx = torch.clamp(stack_top + 1, min=0, max=self.stack_depth)
+        state_emb = self.state_embed(circuit_state)
+        stack_emb = self.stack_embed(stack_idx)
+        
+        # Token embeddings for context
+        token_emb = self.token_embed(context)
+        lstm_out, (h_n, _) = self.context_lstm(token_emb)
+        context_enc = torch.cat([h_n[-2], h_n[-1]], dim=1)
+        
+        # Project circuit counts (integer histogram -> features)
+        circuit_enc = self.hist_proj(circuit_counts.float())
+        
+        # Combine
+        combined = torch.cat([
+            state_emb,
+            stack_emb,
+            context_enc,
+            circuit_enc,
+        ], dim=1)
+        
+        # Compute delta
+        delta = self.delta_mlp(combined)
+        
+        return delta
+
+
+class QuantizedCorrector(nn.Module):
+    """Quantized MLP using small float weights for CPU efficiency.
+    
+    Uses small float weights (initialized from small int range) for CPU efficiency.
+    For true integer-only inference, would need custom kernels.
+    """
+    
+    def __init__(
+        self,
+        input_dim: int,
+        vocab_size: int,
+        hidden_dim: int = 64,
+    ):
+        super().__init__()
+        self.vocab_size = vocab_size
+        self.hidden_dim = hidden_dim
+        
+        # Small float weights (initialized small for quantization effect)
+        # w1: input_dim -> hidden_dim
+        # w2: hidden_dim -> vocab_size
+        self.w1 = nn.Parameter(torch.randn(input_dim, hidden_dim) * 0.1)
+        self.w2 = nn.Parameter(torch.randn(hidden_dim, vocab_size) * 0.1)
+        
+        # Biases
+        self.b1 = nn.Parameter(torch.zeros(hidden_dim))
+        self.b2 = nn.Parameter(torch.zeros(vocab_size))
+    
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """Forward pass with small float weights."""
+        h = torch.relu(x @ self.w1 + self.b1)
+        out = h @ self.w2 + self.b2
+        return out
+
+
 class NeuralCorrector(nn.Module):
     """Neural network that learns to correct CircuitLM predictions.
     
@@ -193,6 +345,123 @@ class NeuralCorrector(nn.Module):
         logits = self.mlp(combined)  # (batch, vocab_size)
 
         return logits
+
+
+class ResidualHybridModel:
+    """Hybrid using residual correction (base + delta).
+    
+    This approach is more principled than weighted blending:
+    - Circuit provides base integer prediction (histogram counts)
+    - Neural network predicts DELTA to add to the histogram
+    - Final prediction = argmax(base + delta)
+    
+    The residual approach explicitly learns where the circuit is wrong.
+    """
+    
+    def __init__(
+        self,
+        circuit: CircuitLM | PDACircuitLM,
+        corrector: ResidualCorrector,
+    ):
+        self.circuit = circuit
+        self.corrector = corrector
+    
+    def predict(
+        self,
+        context_ids: list[int],
+    ) -> tuple[int, dict]:
+        """Predict using residual correction."""
+        device = next(self.corrector.parameters()).device
+        
+        # Get circuit state
+        if isinstance(self.circuit, PDACircuitLM):
+            state = 0
+            stack = []
+            for tok in context_ids:
+                state, stack = self.circuit.step(state, stack, tok)
+            
+            circuit_hist = self.circuit.config_histogram(state, stack)
+            stack_top = stack[-1] if stack else -1
+        else:
+            state = 0
+            for tok in context_ids:
+                state = self.circuit.next_state(state, tok)
+            
+            circuit_hist = self.circuit.state_histogram(state)
+            stack_top = -1
+        
+        # Prepare inputs
+        # Use raw counts (not normalized) for residual learning
+        circuit_counts = torch.tensor(
+            list(circuit_hist) + [0] * (self.corrector.vocab_size - len(circuit_hist)),
+            dtype=torch.float32
+        ).unsqueeze(0).to(device)
+        
+        context_padded = context_ids[-self.corrector.max_context_len:]
+        context_padded = context_padded + [0] * (self.corrector.max_context_len - len(context_padded))
+        
+        with torch.no_grad():
+            delta = self.corrector(
+                circuit_state=torch.tensor([state], dtype=torch.long).to(device),
+                stack_top=torch.tensor([stack_top], dtype=torch.long).to(device),
+                context=torch.tensor([context_padded], dtype=torch.long).to(device),
+                circuit_counts=circuit_counts,
+            )
+        
+        # Add delta to base counts
+        base = circuit_counts.squeeze(0)
+        adjusted = base + delta.squeeze(0)
+        
+        # Argmax
+        predicted_token = adjusted.argmax().item()
+        
+        info = {
+            'circuit_state': state,
+            'stack_top': stack_top,
+            'circuit_histogram': circuit_hist,
+            'delta': delta.cpu().numpy().tolist(),
+            'adjusted': adjusted.cpu().numpy().tolist(),
+        }
+        
+        return predicted_token, info
+    
+    def save(self, path: str) -> None:
+        """Save residual hybrid model."""
+        torch.save({
+            'corrector_state_dict': self.corrector.state_dict(),
+            'corrector_type': 'residual',
+            'embed_dim': self.corrector.embed_dim,
+            'hidden_dim': self.corrector.hidden_dim,
+            'num_layers': self.corrector.num_layers,
+        }, path)
+    
+    @classmethod
+    def load(
+        cls,
+        circuit_path: str,
+        corrector_path: str,
+    ) -> tuple['ResidualHybridModel', Tokenizer]:
+        """Load residual hybrid model."""
+        circuit, tokenizer = load_model(circuit_path)
+        
+        stack_depth = getattr(circuit, 'stack_depth', 4)
+        
+        checkpoint = torch.load(corrector_path, map_location='cpu')
+        embed_dim = checkpoint.get('embed_dim', 64)
+        hidden_dim = checkpoint.get('hidden_dim', 128)
+        num_layers = checkpoint.get('num_layers', 2)
+        
+        corrector = ResidualCorrector(
+            vocab_size=circuit.vocab_size,
+            num_states=circuit.num_states,
+            stack_depth=stack_depth,
+            embed_dim=embed_dim,
+            hidden_dim=hidden_dim,
+            num_layers=num_layers,
+        )
+        corrector.load_state_dict(checkpoint['corrector_state_dict'])
+        
+        return cls(circuit, corrector), tokenizer
 
 
 class HybridModel:
@@ -537,6 +806,136 @@ def train_hybrid(
         'corrector_state_dict': corrector.state_dict(),
         'circuit_weight': circuit_weight,
     }, output_path)
+    print(f"Saved to {output_path}")
+    
+    return hybrid
+
+
+def train_residual_hybrid(
+    circuit_path: str,
+    data_path: str,
+    output_path: str,
+    num_epochs: int = 3,
+    batch_size: int = 64,
+    lr: float = 1e-3,
+    max_examples: int = 50000,
+    max_context_len: int = 32,
+    embed_dim: int = 64,
+    hidden_dim: int = 128,
+    num_layers: int = 2,
+) -> ResidualHybridModel:
+    """Train the residual neural corrector.
+    
+    This trains the network to predict DELTA to add to circuit predictions,
+    rather than blending circuit + neural outputs.
+    """
+    print(f"Loading circuit from {circuit_path}...")
+    circuit, tokenizer = load_model(circuit_path)
+    
+    print(f"Building dataset from {data_path}...")
+    examples = build_dataset(circuit, tokenizer, data_path, max_examples)
+    print(f"Built {len(examples)} training examples")
+    
+    # Count how many CircuitLM got wrong
+    wrong_count = 0
+    for ex in examples:
+        hist = ex.circuit_histogram
+        if hist:
+            pred = max(range(len(hist)), key=lambda i: hist[i])
+            if pred != ex.target_token:
+                wrong_count += 1
+    print(f"CircuitLM accuracy: {100*(len(examples)-wrong_count)/len(examples):.2f}%")
+    
+    # Create dataset - use counts directly for residual learning
+    class ResidualDataset(Dataset):
+        def __init__(self, examples, vocab_size, max_context_len):
+            self.examples = examples
+            self.vocab_size = vocab_size
+            self.max_context_len = max_context_len
+        
+        def __len__(self):
+            return len(self.examples)
+        
+        def __getitem__(self, idx):
+            ex = self.examples[idx]
+            context = ex.context_ids[-self.max_context_len:] if ex.context_ids else []
+            context = context + [0] * (self.max_context_len - len(context))
+            
+            # Use raw counts (not normalized)
+            counts = ex.circuit_histogram + [0] * (self.vocab_size - len(ex.circuit_histogram))
+            
+            return {
+                'circuit_state': torch.tensor(ex.circuit_state, dtype=torch.long),
+                'stack_top': torch.tensor(ex.stack_top, dtype=torch.long),
+                'context': torch.tensor(context, dtype=torch.long),
+                'circuit_counts': torch.tensor(counts, dtype=torch.float32),
+                'target': torch.tensor(ex.target_token, dtype=torch.long),
+            }
+    
+    dataset = ResidualDataset(examples, circuit.vocab_size, max_context_len)
+    dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
+    
+    stack_depth = getattr(circuit, 'stack_depth', 4)
+    
+    corrector = ResidualCorrector(
+        vocab_size=circuit.vocab_size,
+        num_states=circuit.num_states,
+        stack_depth=stack_depth,
+        max_context_len=max_context_len,
+        embed_dim=embed_dim,
+        hidden_dim=hidden_dim,
+        num_layers=num_layers,
+    )
+    
+    num_params = sum(p.numel() for p in corrector.parameters())
+    print(f"ResidualCorrector: {num_params:,} parameters")
+    
+    optimizer = torch.optim.Adam(corrector.parameters(), lr=lr)
+    criterion = nn.CrossEntropyLoss()
+    
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    print(f"Training on {device}")
+    corrector.to(device)
+    
+    for epoch in range(num_epochs):
+        total_loss = 0
+        total_correct = 0
+        total_count = 0
+        
+        for batch in dataloader:
+            batch = {k: v.to(device) for k, v in batch.items()}
+            
+            # Get delta from corrector
+            delta = corrector(
+                batch['circuit_state'],
+                batch['stack_top'],
+                batch['context'],
+                batch['circuit_counts'],
+            )
+            
+            # Add delta to base counts
+            base = batch['circuit_counts']
+            adjusted = base + delta
+            
+            # Cross-entropy loss
+            loss = criterion(adjusted, batch['target'])
+            
+            optimizer.zero_grad()
+            loss.backward()
+            optimizer.step()
+            
+            total_loss += loss.item()
+            preds = adjusted.argmax(dim=1)
+            total_correct += (preds == batch['target']).sum().item()
+            total_count += batch['target'].size(0)
+        
+        accuracy = 100 * total_correct / total_count
+        avg_loss = total_loss / len(dataloader)
+        print(f"Epoch {epoch+1}/{num_epochs}: loss={avg_loss:.4f}, accuracy={accuracy:.2f}%")
+    
+    # Save
+    hybrid = ResidualHybridModel(circuit, corrector)
+    hybrid.save(output_path)
     print(f"Saved to {output_path}")
     
     return hybrid

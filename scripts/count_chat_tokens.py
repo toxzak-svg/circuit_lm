@@ -50,6 +50,13 @@ def main() -> int:
         default=512,
         help="BPE merge count when --tokenizer bpe (default: 512).",
     )
+    parser.add_argument(
+        "--bpe-sample",
+        type=int,
+        default=None,
+        metavar="CHARS",
+        help="Use first N chars for BPE training (faster on large files). Default: use all text.",
+    )
     args = parser.parse_args()
 
     root = pathlib.Path(__file__).resolve().parent.parent
@@ -80,8 +87,12 @@ def main() -> int:
         return 1
 
     if args.tokenizer == "bpe":
+        train_text = combined
+        if args.bpe_sample is not None and len(combined) > args.bpe_sample:
+            train_text = combined[: args.bpe_sample]
+            print(f"(BPE trained on first {len(train_text):,} chars for speed)", file=sys.stderr)
         tokenizer = Tokenizer.from_text(
-            combined,
+            train_text,
             mode="bpe",
             bpe_merges=args.bpe_merges,
         )
