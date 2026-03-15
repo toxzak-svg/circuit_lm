@@ -78,10 +78,15 @@ class HybridDataset(Dataset):
 
 
 class NeuralCorrector(nn.Module):
-    """Small neural network that learns to correct CircuitLM predictions.
+    """Neural network that learns to correct CircuitLM predictions.
     
     Input: (circuit_state, stack_top, context, circuit_probs)
     Output: Logits to add to circuit predictions
+    
+    Configs (use larger for better quality):
+      small:  embed_dim=32,  hidden_dim=64,  num_layers=1
+      medium: embed_dim=64,  hidden_dim=128, num_layers=2  
+      large:  embed_dim=128, hidden_dim=256, num_layers=3
     """
 
     def __init__(
@@ -90,32 +95,54 @@ class NeuralCorrector(nn.Module):
         num_states: int = 16,
         stack_depth: int = 4,
         max_context_len: int = 32,
-        embed_dim: int = 32,
-        hidden_dim: int = 64,
+        embed_dim: int = 64,
+        hidden_dim: int = 128,
+        num_layers: int = 2,
     ):
         super().__init__()
         self.vocab_size = vocab_size
         self.num_states = num_states
         self.stack_depth = stack_depth
         self.max_context_len = max_context_len
+        self.embed_dim = embed_dim
+        self.hidden_dim = hidden_dim
+        self.num_layers = num_layers
 
         # Embeddings for discrete inputs
         self.state_embed = nn.Embedding(num_states + 1, embed_dim)  # +1 for padding
         self.stack_embed = nn.Embedding(stack_depth + 1, embed_dim)  # +1 for empty
         self.token_embed = nn.Embedding(vocab_size, embed_dim)
 
-        # Circuit probability projection
-        self.circuit_proj = nn.Linear(vocab_size, embed_dim)
+        # Circuit probability projection (with reduction for large vocab)
+        if vocab_size > 512:
+            self.circuit_proj = nn.Sequential(
+                nn.Linear(vocab_size, embed_dim * 2),
+                nn.ReLU(),
+                nn.Linear(embed_dim * 2, embed_dim)
+            )
+        else:
+            self.circuit_proj = nn.Linear(vocab_size, embed_dim)
 
-        # Context encoder (simple CNN over embeddings)
-        self.context_conv = nn.Conv1d(
-            embed_dim, embed_dim, kernel_size=3, padding=1
+        # Context encoder - LSTM for better sequential understanding
+        self.context_lstm = nn.LSTM(
+            embed_dim, embed_dim, num_layers=1, 
+            batch_first=True, bidirectional=True
         )
-
+        
         # Combined hidden layer
-        combined_dim = embed_dim * 4  # state + stack + context + circuit
-        self.fc1 = nn.Linear(combined_dim, hidden_dim)
-        self.fc2 = nn.Linear(hidden_dim, vocab_size)
+        lstm_out = embed_dim * 2  # bidirectional
+        combined_dim = embed_dim * 3 + lstm_out  # state + stack + (bidir lstm) + circuit
+        
+        # Deep MLP with skip connections
+        layers = []
+        in_dim = combined_dim
+        for i in range(num_layers):
+            layers.append(nn.Linear(in_dim, hidden_dim))
+            layers.append(nn.ReLU())
+            layers.append(nn.Dropout(0.1))
+            in_dim = hidden_dim
+        layers.append(nn.Linear(hidden_dim, vocab_size))
+        self.mlp = nn.Sequential(*layers)
 
     def forward(
         self,
@@ -146,10 +173,10 @@ class NeuralCorrector(nn.Module):
         # Token embeddings for context
         token_emb = self.token_embed(context)  # (batch, context_len, embed_dim)
         
-        # Encode context with conv
-        token_emb_t = token_emb.transpose(1, 2)  # (batch, embed_dim, context_len)
-        context_enc = self.context_conv(token_emb_t)  # (batch, embed_dim, context_len)
-        context_enc = context_enc.mean(dim=2)  # (batch, embed_dim) - average pooling
+        # Encode context with LSTM (bidirectional)
+        lstm_out, (h_n, c_n) = self.context_lstm(token_emb)
+        # Concatenate forward and backward final hidden states
+        context_enc = torch.cat([h_n[-2], h_n[-1]], dim=1)  # (batch, embed_dim * 2)
 
         # Project circuit probabilities
         circuit_enc = self.circuit_proj(circuit_probs)  # (batch, embed_dim)
@@ -160,11 +187,10 @@ class NeuralCorrector(nn.Module):
             stack_emb,
             context_enc,
             circuit_enc,
-        ], dim=1)  # (batch, embed_dim * 4)
+        ], dim=1)  # (batch, embed_dim * 3 + embed_dim * 2)
 
-        # Hidden layers
-        hidden = F.relu(self.fc1(combined))
-        logits = self.fc2(hidden)  # (batch, vocab_size)
+        # Deep MLP
+        logits = self.mlp(combined)  # (batch, vocab_size)
 
         return logits
 
@@ -262,6 +288,9 @@ class HybridModel:
             'corrector_state_dict': self.corrector.state_dict(),
             'circuit_weight': self.circuit_weight,
             'circuit_type': 'pda' if isinstance(self.circuit, PDACircuitLM) else 'fsm',
+            'embed_dim': self.corrector.embed_dim,
+            'hidden_dim': self.corrector.hidden_dim,
+            'num_layers': self.corrector.num_layers,
         }, path)
 
     @classmethod
@@ -280,10 +309,19 @@ class HybridModel:
 
         stack_depth = getattr(circuit, 'stack_depth', 4)
 
+        # Load checkpoint to get architecture params
+        checkpoint = torch.load(corrector_path, map_location='cpu')
+        embed_dim = checkpoint.get('embed_dim', 64)
+        hidden_dim = checkpoint.get('hidden_dim', 128)
+        num_layers = checkpoint.get('num_layers', 2)
+        
         corrector = NeuralCorrector(
             vocab_size=circuit.vocab_size,
             num_states=circuit.num_states,
             stack_depth=stack_depth,
+            embed_dim=embed_dim,
+            hidden_dim=hidden_dim,
+            num_layers=num_layers,
         )
         checkpoint = torch.load(corrector_path, map_location='cpu')
         corrector.load_state_dict(checkpoint['corrector_state_dict'])
@@ -395,6 +433,10 @@ def train_hybrid(
     circuit_weight: float = 0.5,
     max_examples: int = 50000,
     max_context_len: int = 32,
+    # Larger corrector options:
+    embed_dim: int = 64,
+    hidden_dim: int = 128,
+    num_layers: int = 2,
 ):
     """Train the neural corrector.
 
@@ -430,7 +472,14 @@ def train_hybrid(
         num_states=circuit.num_states,
         stack_depth=stack_depth,
         max_context_len=max_context_len,
+        embed_dim=embed_dim,
+        hidden_dim=hidden_dim,
+        num_layers=num_layers,
     )
+    
+    # Print model size
+    num_params = sum(p.numel() for p in corrector.parameters())
+    print(f"NeuralCorrector: {num_params:,} parameters")
     
     # Training setup
     optimizer = torch.optim.Adam(corrector.parameters(), lr=lr)
