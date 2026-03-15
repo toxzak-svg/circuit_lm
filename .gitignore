@@ -12,3 +12,11 @@ env/
 *.json
 !pyproject.toml
 .worktrees/
+
+# Large files: PyTorch checkpoints, big data, exports
+*.pt
+big_output.txt
+chat_data_500k.txt
+chat_data_full.txt
+combined_data.txt
+chat_export/
