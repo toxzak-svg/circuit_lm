@@ -13,6 +13,7 @@ introduced at the CLI layer.
 from __future__ import annotations
 
 import argparse
+import pathlib
 import sys
 
 
@@ -261,6 +262,97 @@ def cmd_sample(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_trace(args: argparse.Namespace) -> int:
+    """Print step-by-step trace of state and top-k predictions."""
+    import json as _json
+    from circuit_lm.io import load_model
+    from circuit_lm.trace import trace_steps, TraceStep
+
+    print(f"[trace] model={args.model!r}  prompt={args.prompt!r}  top_k={args.top_k}")
+    model, tokenizer = load_model(args.model)
+    prompt_ids = tokenizer.encode(args.prompt)
+    if not prompt_ids:
+        print("[trace] empty prompt")
+        return 0
+
+    steps: list[dict] = []
+    for s in trace_steps(model, prompt_ids, top_k=args.top_k):
+        tok_repr = repr(tokenizer.decode([s.token_id]))
+        stack_str = f" stack_top={s.stack_top}" if s.stack_top is not None else ""
+        top_k_repr = tokenizer.decode(s.top_k_token_ids)
+        line = f"  step={s.step} token_id={s.token_id} token={tok_repr} state={s.state}{stack_str} top_k={top_k_repr!r}"
+        print(line)
+        steps.append({
+            "step": s.step,
+            "token_id": s.token_id,
+            "token": tokenizer.decode([s.token_id]),
+            "state": s.state,
+            "stack_top": s.stack_top,
+            "top_k_token_ids": s.top_k_token_ids,
+            "top_k_tokens": tokenizer.decode(s.top_k_token_ids),
+        })
+
+    if args.json_out:
+        args.json_out.write_text(_json.dumps(steps, indent=2), encoding="utf-8")
+        print(f"[trace] JSON written to {args.json_out}")
+    return 0
+
+
+def _import_hybrid(*names: str):
+    """Import from src.hybrid; ensure repo root is on path when running as installed cmd."""
+    import pathlib
+
+    def _get(mod):  # noqa: B008
+        return tuple(getattr(mod, n) for n in names)
+
+    try:
+        from src import hybrid as _mod
+        return _get(_mod)
+    except ImportError:
+        pass
+    for candidate in [pathlib.Path.cwd(), pathlib.Path.cwd().parent]:
+        if (candidate / "src" / "hybrid.py").exists():
+            if str(candidate) not in sys.path:
+                sys.path.insert(0, str(candidate))
+            from src import hybrid as _mod
+            return _get(_mod)
+    try:
+        import hybrid as _mod
+        return _get(_mod)
+    except ImportError:
+        return None
+
+
+def cmd_hybrid_train(args: argparse.Namespace) -> int:
+    """Train the neural corrector on top of an existing circuit model."""
+    out = _import_hybrid("train_hybrid")
+    if out is None:
+        print(
+            "[hybrid-train] ERROR: hybrid module not found. Run from repo root or "
+            "install with: pip install -e '.[dev]' and run from repo root.",
+            file=sys.stderr,
+        )
+        return 1
+    (train_hybrid,) = out
+
+    print(
+        f"[hybrid-train] circuit={args.circuit!r}  data={args.data!r}  out={args.out!r}"
+        f"  epochs={args.epochs}  max_examples={args.max_examples}"
+    )
+    train_hybrid(
+        circuit_path=args.circuit,
+        data_path=args.data,
+        output_path=args.out,
+        num_epochs=args.epochs,
+        batch_size=args.batch,
+        lr=args.lr,
+        circuit_weight=args.circuit_weight,
+        max_examples=args.max_examples,
+        max_context_len=args.max_context_len,
+    )
+    return 0
+
+
 def cmd_chat(args: argparse.Namespace) -> int:
     """Interactive chat using a trained model (User: / Assistant: format)."""
     from circuit_lm.chat import (
@@ -271,10 +363,26 @@ def cmd_chat(args: argparse.Namespace) -> int:
     )
     from circuit_lm.io import load_model
 
+    use_hybrid = getattr(args, 'corrector', None) is not None
+
+    if use_hybrid:
+        out = _import_hybrid("HybridModel", "generate_reply_hybrid")
+        if out is None:
+            print(
+                "[chat] ERROR: hybrid module not found. Run from repo root.",
+                file=sys.stderr,
+            )
+            return 1
+        HybridModel, generate_reply_hybrid = out
+        hybrid, tokenizer = HybridModel.load(args.model, args.corrector)
+        model = hybrid
+    else:
+        model, tokenizer = load_model(args.model)
+
     print(
         f"[chat] model={args.model!r}  max_tokens={args.max_tokens}  seed={args.seed}"
+        + (f"  corrector={args.corrector!r}" if use_hybrid else "")
     )
-    model, tokenizer = load_model(args.model)
 
     turns: list[tuple[str, str]] = []
     print(USER_PREFIX, end="", flush=True)
@@ -292,17 +400,27 @@ def cmd_chat(args: argparse.Namespace) -> int:
         prompt_ids = tokenizer.encode(prompt_str)
 
         stop_sequence = tokenizer.encode("\n\n") if args.paragraph else None
-        reply_ids = generate_reply(
-            model=model,
-            tokenizer=tokenizer,
-            prompt_ids=prompt_ids,
-            max_tokens=args.max_tokens,
-            seed=args.seed,
-            stop_sequence=stop_sequence,
-            top_k=args.top_k,
-            repeat_penalty_div=args.repeat_penalty_div,
-            repeat_window=args.repeat_window,
-        )
+        if use_hybrid:
+            reply_ids = generate_reply_hybrid(
+                hybrid=model,
+                tokenizer=tokenizer,
+                prompt_ids=prompt_ids,
+                max_tokens=args.max_tokens,
+                stop_token_ids=tokenizer.encode("\n"),
+                stop_sequence=stop_sequence,
+            )
+        else:
+            reply_ids = generate_reply(
+                model=model,
+                tokenizer=tokenizer,
+                prompt_ids=prompt_ids,
+                max_tokens=args.max_tokens,
+                seed=args.seed,
+                stop_sequence=stop_sequence,
+                top_k=args.top_k,
+                repeat_penalty_div=args.repeat_penalty_div,
+                repeat_window=args.repeat_window,
+            )
         reply_text = tokenizer.decode(reply_ids)
         turns.append(("assistant", reply_text))
 
@@ -458,10 +576,45 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_sample.set_defaults(func=cmd_sample)
 
+    # -- trace ----------------------------------------------------------------
+    p_trace = sub.add_parser("trace", help="Step-by-step trace of state and top-k predictions.")
+    p_trace.add_argument("--prompt", default="", metavar="TEXT", help="Prompt string.")
+    p_trace.add_argument("--model", default="model.json", metavar="PATH", help="Model path.")
+    p_trace.add_argument("--top_k", type=_int_ge_0, default=5, metavar="K", help="Number of top predictions per step (default: 5).")
+    p_trace.add_argument("--json-out", type=pathlib.Path, default=None, metavar="PATH", help="Write trace to JSON file.")
+    p_trace.set_defaults(func=cmd_trace)
+
+    # -- hybrid-train --------------------------------------------------------
+    p_hybrid = sub.add_parser(
+        "hybrid-train",
+        help="Train neural corrector on top of an existing circuit model.",
+    )
+    p_hybrid.add_argument("--circuit", required=True, metavar="PATH",
+                         help="Path to trained circuit model .json.")
+    p_hybrid.add_argument("--data", required=True, metavar="PATH",
+                         help="Path to training text file.")
+    p_hybrid.add_argument("--out", default="corrector.pt", metavar="PATH",
+                         help="Output path for corrector checkpoint (default: corrector.pt).")
+    p_hybrid.add_argument("--epochs", type=_int_ge_1, default=3, metavar="N",
+                         help="Training epochs (default: 3).")
+    p_hybrid.add_argument("--batch", type=_int_ge_1, default=64, metavar="N",
+                         help="Batch size (default: 64).")
+    p_hybrid.add_argument("--lr", type=float, default=1e-3, metavar="R",
+                         help="Learning rate (default: 1e-3).")
+    p_hybrid.add_argument("--circuit-weight", type=float, default=0.5, metavar="W",
+                         help="Circuit weight in blend (default: 0.5).")
+    p_hybrid.add_argument("--max-examples", type=_int_ge_0, default=50000, metavar="N",
+                         help="Max training examples (default: 50000).")
+    p_hybrid.add_argument("--max-context-len", type=_int_ge_0, default=32, metavar="N",
+                         help="Context length for corrector (default: 32).")
+    p_hybrid.set_defaults(func=cmd_hybrid_train)
+
     # -- chat ----------------------------------------------------------------
     p_chat = sub.add_parser("chat", help="Interactive chat (User: / Assistant: format).")
     p_chat.add_argument("--model", default="model.json", metavar="PATH",
                         help="Model JSON path (default: model.json).")
+    p_chat.add_argument("--corrector", default=None, metavar="PATH",
+                        help="Path to corrector .pt for hybrid chat (optional).")
     p_chat.add_argument("--max_tokens", type=_int_ge_0, default=128, metavar="M",
                         help="Max tokens per reply (default: 128).")
     p_chat.add_argument("--seed", type=int, default=42, metavar="SEED",

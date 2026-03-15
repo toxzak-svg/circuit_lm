@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import pathlib
+from collections.abc import Iterator
 
 from circuit_lm.tokenizer import Tokenizer
 
@@ -36,8 +37,8 @@ def load_sequences(
     Each returned sequence has length ≤ seq_len + 1 and contains at least
     two tokens (so that at least one (input, target) pair can be formed).
 
-    TODO: Streaming support for files larger than RAM.
-    TODO: Overlap / stride parameter.
+    Loads the entire file into memory. For large corpora use
+    :func:`iter_sequences` or :func:`iter_sequence_chunks` instead.
 
     Args:
         path:      Path to a plain-text UTF-8 file.
@@ -58,6 +59,73 @@ def load_sequences(
         if len(chunk) >= 2:
             sequences.append(chunk)
     return sequences
+
+
+def iter_sequences(
+    path: str | pathlib.Path,
+    tokenizer: Tokenizer,
+    seq_len: int = 256,
+    stride: int | None = None,
+) -> Iterator[list[int]]:
+    """Yield fixed-length sequences from a text file without loading it all into memory.
+
+    Reads the file line by line, tokenizes incrementally, and yields each
+    sequence of length seq_len + 1 (so that at least one (input, target) pair
+    can be formed). Use this for corpora larger than RAM.
+
+    Args:
+        path:      Path to a plain-text UTF-8 file.
+        tokenizer: Tokenizer used to convert characters to integer IDs.
+        seq_len:   Maximum number of input tokens per sequence (yielded length is seq_len + 1).
+        stride:    Advance by this many tokens after each sequence (default: seq_len).
+
+    Yields:
+        Integer token-ID lists of length seq_len + 1.
+    """
+    if stride is None:
+        stride = seq_len
+    ids: list[int] = []
+    path = pathlib.Path(path)
+    with path.open(encoding="utf-8") as f:
+        for line in f:
+            ids.extend(tokenizer.encode(line))
+            while len(ids) >= seq_len + 1:
+                yield ids[: seq_len + 1]
+                ids = ids[stride:]
+
+
+def iter_sequence_chunks(
+    path: str | pathlib.Path,
+    tokenizer: Tokenizer,
+    seq_len: int = 256,
+    stride: int | None = None,
+    chunk_size: int = 5000,
+) -> Iterator[list[list[int]]]:
+    """Yield batches of sequences from a text file without loading it all into memory.
+
+    Same as :func:`iter_sequences` but yields lists of up to *chunk_size*
+    sequences at a time, for use with trainers that process batches.
+
+    Args:
+        path:       Path to a plain-text UTF-8 file.
+        tokenizer:  Tokenizer used to convert characters to integer IDs.
+        seq_len:    Maximum number of input tokens per sequence.
+        stride:     Advance by this many tokens after each sequence (default: seq_len).
+        chunk_size: Maximum number of sequences per yielded batch.
+
+    Yields:
+        Lists of integer token-ID sequences (each of length seq_len + 1).
+    """
+    if stride is None:
+        stride = seq_len
+    batch: list[list[int]] = []
+    for seq in iter_sequences(path, tokenizer, seq_len=seq_len, stride=stride):
+        batch.append(seq)
+        if len(batch) >= chunk_size:
+            yield batch
+            batch = []
+    if batch:
+        yield batch
 
 
 # ---------------------------------------------------------------------------

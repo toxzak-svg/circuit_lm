@@ -36,6 +36,7 @@ from circuit_lm.metrics import (
 )
 from circuit_lm.io import save_model, load_model
 from circuit_lm.cli import build_parser, cmd_train
+from circuit_lm.trace import trace_steps, TraceStep
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -540,6 +541,19 @@ def test_sample_tokens_length(tiny_model: CircuitLM, tokenizer: Tokenizer) -> No
     prompt = tokenizer.encode("hello")
     out = sample_tokens(tiny_model, prompt, max_tokens=20, seed=0)
     assert len(out) == len(prompt) + 20
+
+
+def test_trace_steps_fsm(tiny_model: CircuitLM, tokenizer: Tokenizer) -> None:
+    prompt_ids = tokenizer.encode("hello")
+    steps = list(trace_steps(tiny_model, prompt_ids, top_k=3))
+    assert len(steps) == len(prompt_ids)
+    for s in steps:
+        assert isinstance(s, TraceStep)
+        assert s.step in range(len(prompt_ids))
+        assert s.token_id == prompt_ids[s.step]
+        assert s.state >= 0 and s.state < tiny_model.num_states
+        assert s.stack_top is None
+        assert len(s.top_k_token_ids) <= 3
 
 
 def test_sample_tokens_deterministic(tiny_model: CircuitLM, tokenizer: Tokenizer) -> None:

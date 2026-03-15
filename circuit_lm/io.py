@@ -212,10 +212,12 @@ def _load_ppm(data: dict) -> PPMModel:
 
 
 def load_model(path: str | pathlib.Path) -> tuple[AnyModel, Tokenizer]:
-    """Load a model and tokenizer from a JSON file.
+    """Load a model and tokenizer from a JSON or MessagePack file.
 
-    Auto-detects model type from the ``"model_type"`` field.  Files written
-    before that field was added are treated as FSM models.
+    Format is chosen by file extension: ``.msgpack`` (case-insensitive) uses
+    MessagePack; otherwise JSON is assumed. Auto-detects model type from the
+    ``"model_type"`` field.  Files written before that field was added are
+    treated as FSM models.
 
     Returns:
         ``(model, tokenizer)`` where model is either
@@ -226,7 +228,10 @@ def load_model(path: str | pathlib.Path) -> tuple[AnyModel, Tokenizer]:
         FileNotFoundError: If *path* does not exist.
         KeyError / ValueError: If the file is malformed.
     """
-    data = json.loads(pathlib.Path(path).read_text(encoding="utf-8"))
+    path = pathlib.Path(path)
+    if path.suffix.lower() == ".msgpack":
+        return load_msgpack(path)
+    data = json.loads(path.read_text(encoding="utf-8"))
     model_type = data.get("model_type", "fsm")
 
     tokenizer = Tokenizer.from_dict(data["tokenizer"])

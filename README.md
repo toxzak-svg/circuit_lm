@@ -4,7 +4,7 @@
 
 A **finite-state circuit language model** trained with [OR-Tools CP-SAT](https://developers.google.com/optimization/reference/python/sat/python/cp_model).
 
-Current project snapshot and next milestones: see [`STATUS.md`](STATUS.md).
+Current project snapshot and next milestones: see [`STATUS.md`](STATUS.md). For a comprehensive status report with research and productization next steps, see [`STATUS_REPORT.md`](STATUS_REPORT.md).
 
 ## Hard constraints
 
@@ -120,6 +120,29 @@ circuit-lm sample \
 Sampling uses integer-weighted random choice — no softmax, no temperature float.
 `--top_k` and repetition penalty controls are all integer-only.
 
+### Hybrid (circuit + neural corrector)
+
+Train a circuit first, then train the corrector (requires PyTorch; run from repo root):
+
+```bash
+circuit-lm hybrid-train --circuit model.json --data data.txt --out corrector.pt --epochs 5 --max-examples 100000
+```
+
+Interactive chat with the hybrid model:
+
+```bash
+circuit-lm chat --model model.json --corrector corrector.pt
+```
+
+Use a BPE-trained circuit for larger vocabulary: `circuit-lm train ... --tokenizer bpe --bpe_merges 512`, then run `hybrid-train` on the same data.
+
+**Trace** (interpretability — state and top-k predictions per token):
+
+```bash
+circuit-lm trace --prompt "Hello" --model model.json --top_k 5
+circuit-lm trace --prompt "Hello" --model model.json --json-out trace.json
+```
+
 ## Running tests
 
 ```bash
@@ -133,6 +156,15 @@ Key test modules:
 - `test_circuit_eval` — integration / unit tests
 
 ## Benchmark
+
+Single script that runs depth-generalization and serialization benchmarks and prints a summary table:
+
+```bash
+python3 scripts/run_all_benchmarks.py
+python3 scripts/run_all_benchmarks.py --csv-out results/bench.csv
+```
+
+Smoke and matrix:
 
 ```bash
 python3 scripts/benchmark_small.py
@@ -250,5 +282,5 @@ All numeric values are JSON integers.
 - [x] Iterative state-assignment refinement (EM-like re-estimation loop over transition / emission counts)
 - [x] Compressed binary model format (MessagePack): `save_msgpack` / `load_msgpack` + paired JSON/msgpack serialization benchmark
 - [ ] Multi-pass CP-SAT for larger state spaces
-- [ ] Streaming data loading for large corpora
+- [x] Streaming data loading for large corpora — `iter_sequences` / `iter_sequence_chunks` in `circuit_lm/data.py`
 - [x] Per-(state, token, stack_top) stack operations — `push_configs`/`pop_configs` (`frozenset[tuple[int,int,int]]`) throughout; `stack_op(state, token, stack_top)` dispatches on the full config triple
