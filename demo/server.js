@@ -14,8 +14,6 @@ import { spawn } from 'child_process';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
 import { existsSync, readFileSync } from 'fs';
-import { randomUUID } from 'crypto';
-import { writeFileSync, unlinkSync } from 'fs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const app = express();
@@ -38,44 +36,40 @@ app.post('/api/query', async (req, res) => {
   }
 
   const repoRoot = join(__dirname, '..');
-  const traceFile = `/tmp/circuit_trace_${randomUUID()}.json`;
 
   try {
-    const result = await runCircuitLM(repoRoot, input, traceFile);
+    const result = await runCircuitLM(repoRoot, input);
     res.json(result);
   } catch (err) {
     console.error('CircuitLM error:', err);
     // Fall back to simulated response
     res.json(generateFallbackResponse(input));
-  } finally {
-    if (existsSync(traceFile)) {
-      try { unlinkSync(traceFile); } catch {}
-    }
   }
 });
 
 /**
  * Call CircuitLM CLI and return structured trace + decision
  */
-async function runCircuitLM(repoRoot, userInput, traceFile) {
+async function runCircuitLM(repoRoot, userInput) {
   const prompt = `User: ${userInput}\nAssistant: `;
 
   // Try to run CircuitLM trace
+  const modelPath = join(repoRoot, 'models/infra_circuit.json');
   const traceResult = await runCommand('python3', [
     '-m', 'circuit_lm.cli',
     'trace',
     '--prompt', prompt,
-    '--json-out', traceFile
+    '--model', modelPath,
+    '--json-out', '/tmp/circuit_trace.json'
   ], repoRoot);
 
   // Try to read the trace file
   let steps = [];
-  if (existsSync(traceFile)) {
-    try {
-      const traceData = JSON.parse(readFileSync(traceFile, 'utf8'));
-      steps = Array.isArray(traceData) ? traceData.slice(0, 30) : [];
-    } catch {}
-  }
+  try {
+    const traceData = JSON.parse(readFileSync('/tmp/circuit_trace.json', 'utf8'));
+    steps = Array.isArray(traceData) ? traceData.slice(0, 30) : [];
+  } catch {}
+
 
   // Tokenize input
   let tokens = [];
