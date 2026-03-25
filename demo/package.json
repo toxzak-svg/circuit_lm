@@ -1,0 +1,14 @@
+{
+  "name": "circuitlm-demo",
+  "version": "1.0.0",
+  "description": "CircuitLM Interactive Demo — autonomous infrastructure reasoning",
+  "main": "server.js",
+  "type": "module",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js"
+  },
+  "dependencies": {
+    "express": "^4.19.2"
+  }
+}
