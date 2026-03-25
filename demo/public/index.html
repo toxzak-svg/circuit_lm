@@ -1,0 +1,540 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>CircuitLM — Autonomous Infrastructure Reasoning</title>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg: #0d1117;
+      --surface: #161b22;
+      --border: #30363d;
+      --text: #e6edf3;
+      --text-muted: #8b949e;
+      --accent: #58a6ff;
+      --green: #3fb950;
+      --orange: #d29922;
+      --purple: #a371f7;
+      --red: #f85149;
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: 'Inter', -apple-system, sans-serif;
+      min-height: 100vh;
+      line-height: 1.6;
+    }
+
+    /* Header */
+    header {
+      border-bottom: 1px solid var(--border);
+      padding: 16px 32px;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+
+    .logo {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 20px;
+      font-weight: 600;
+      color: var(--accent);
+    }
+
+    .badge {
+      background: rgba(88, 166, 255, 0.1);
+      border: 1px solid rgba(88, 166, 255, 0.3);
+      color: var(--accent);
+      font-size: 11px;
+      padding: 2px 8px;
+      border-radius: 12px;
+      font-family: 'JetBrains Mono', monospace;
+    }
+
+    .no-llm-badge {
+      background: rgba(63, 185, 80, 0.1);
+      border: 1px solid rgba(63, 185, 80, 0.3);
+      color: var(--green);
+    }
+
+    /* Hero */
+    .hero {
+      text-align: center;
+      padding: 64px 32px 32px;
+      max-width: 800px;
+      margin: 0 auto;
+    }
+
+    .hero h1 {
+      font-size: 36px;
+      font-weight: 700;
+      margin-bottom: 12px;
+      letter-spacing: -0.5px;
+    }
+
+    .hero p {
+      color: var(--text-muted);
+      font-size: 18px;
+      margin-bottom: 8px;
+    }
+
+    .hero .tagline {
+      color: var(--purple);
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 14px;
+    }
+
+    /* Main layout */
+    .main-container {
+      max-width: 1200px;
+      margin: 0 auto;
+      padding: 0 32px 64px;
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 24px;
+    }
+
+    @media (max-width: 900px) {
+      .main-container { grid-template-columns: 1fr; }
+    }
+
+    /* Panels */
+    .panel {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      overflow: hidden;
+    }
+
+    .panel-header {
+      padding: 12px 16px;
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+
+    .panel-title {
+      font-size: 12px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      color: var(--text-muted);
+    }
+
+    .panel-body { padding: 16px; }
+
+    /* Input panel */
+    .input-panel {
+      grid-column: 1 / -1;
+    }
+
+    .query-input {
+      width: 100%;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 14px 16px;
+      color: var(--text);
+      font-size: 16px;
+      font-family: 'Inter', sans-serif;
+      outline: none;
+      transition: border-color 0.2s;
+      resize: vertical;
+      min-height: 80px;
+    }
+
+    .query-input:focus { border-color: var(--accent); }
+
+    .submit-btn {
+      margin-top: 12px;
+      background: var(--accent);
+      color: #fff;
+      border: none;
+      border-radius: 8px;
+      padding: 12px 24px;
+      font-size: 15px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: opacity 0.2s;
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .submit-btn:hover { opacity: 0.85; }
+    .submit-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+    /* Trace panel */
+    .trace-step {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 13px;
+      padding: 8px 12px;
+      border-radius: 6px;
+      margin-bottom: 6px;
+      border-left: 3px solid transparent;
+      transition: all 0.3s;
+    }
+
+    .trace-step.active {
+      border-left-color: var(--green);
+      background: rgba(63, 185, 80, 0.08);
+    }
+
+    .trace-step .step-num {
+      color: var(--text-muted);
+      font-size: 11px;
+      margin-right: 8px;
+    }
+
+    .trace-step .state-badge {
+      background: rgba(163, 113, 247, 0.15);
+      color: var(--purple);
+      padding: 1px 6px;
+      border-radius: 4px;
+      font-size: 11px;
+      margin-left: 8px;
+    }
+
+    .trace-step .token-display {
+      color: var(--accent);
+    }
+
+    .trace-step .top-k {
+      color: var(--text-muted);
+      font-size: 11px;
+      margin-top: 4px;
+    }
+
+    /* Services panel */
+    .service-card {
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 12px 14px;
+      margin-bottom: 8px;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+
+    .service-icon {
+      width: 36px;
+      height: 36px;
+      border-radius: 8px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 18px;
+    }
+
+    .service-icon.db { background: rgba(88, 166, 255, 0.15); }
+    .service-icon.backend { background: rgba(210, 153, 34, 0.15); }
+    .service-icon.frontend { background: rgba(163, 113, 247, 0.15); }
+    .service-icon.auth { background: rgba(248, 81, 73, 0.15); }
+    .service-icon.websocket { background: rgba(63, 185, 80, 0.15); }
+
+    .service-info { flex: 1; }
+    .service-name { font-weight: 600; font-size: 14px; }
+    .service-provider { font-size: 12px; color: var(--text-muted); }
+
+    .connection-arrow {
+      text-align: center;
+      color: var(--text-muted);
+      font-size: 12px;
+      font-family: 'JetBrains Mono', monospace;
+      padding: 4px 0;
+    }
+
+    /* Reasoning panel */
+    .reasoning-item {
+      display: flex;
+      gap: 10px;
+      margin-bottom: 10px;
+      font-size: 14px;
+    }
+
+    .reasoning-num {
+      color: var(--accent);
+      font-family: 'JetBrains Mono', monospace;
+      font-weight: 600;
+      font-size: 12px;
+      min-width: 20px;
+    }
+
+    .reasoning-text { color: var(--text-muted); }
+
+    /* Cost badge */
+    .cost-badge {
+      background: rgba(63, 185, 80, 0.1);
+      border: 1px solid rgba(63, 185, 80, 0.3);
+      color: var(--green);
+      padding: 4px 12px;
+      border-radius: 16px;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 13px;
+    }
+
+    /* Loading state */
+    .loading {
+      text-align: center;
+      padding: 40px;
+      color: var(--text-muted);
+    }
+
+    .loading-spinner {
+      width: 32px;
+      height: 32px;
+      border: 3px solid var(--border);
+      border-top-color: var(--accent);
+      border-radius: 50%;
+      animation: spin 1s linear infinite;
+      margin: 0 auto 12px;
+    }
+
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    /* Empty state */
+    .empty-state {
+      text-align: center;
+      padding: 40px 20px;
+      color: var(--text-muted);
+    }
+
+    .empty-state .emoji { font-size: 32px; margin-bottom: 8px; }
+
+    /* Stats bar */
+    .stats-bar {
+      display: flex;
+      gap: 24px;
+      padding: 12px 16px;
+      background: var(--bg);
+      border-radius: 8px;
+      margin-bottom: 12px;
+    }
+
+    .stat {
+      display: flex;
+      flex-direction: column;
+    }
+
+    .stat-val {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 18px;
+      font-weight: 600;
+      color: var(--accent);
+    }
+
+    .stat-label {
+      font-size: 11px;
+      color: var(--text-muted);
+      text-transform: uppercase;
+    }
+
+    /* Footer */
+    footer {
+      border-top: 1px solid var(--border);
+      padding: 16px 32px;
+      text-align: center;
+      color: var(--text-muted);
+      font-size: 13px;
+    }
+
+    footer a { color: var(--accent); text-decoration: none; }
+  </style>
+</head>
+<body>
+
+<header>
+  <span class="logo">CircuitLM</span>
+  <span class="badge">CP-SAT Reasoning</span>
+  <span class="badge no-llm-badge">No LLM Calls</span>
+</header>
+
+<section class="hero">
+  <h1>Autonomous Infrastructure Reasoning</h1>
+  <p>Describe what you want to build. Watch a finite-state machine decide how to wire it together — without calling any LLM API.</p>
+  <p class="tagline"> Deterministic · Verifiable · $0 inference cost</p>
+</section>
+
+<div class="main-container">
+
+  <!-- Input -->
+  <div class="panel input-panel">
+    <div class="panel-header">
+      <span class="panel-title">Describe your application</span>
+    </div>
+    <div class="panel-body">
+      <textarea class="query-input" id="queryInput" placeholder="e.g. Build me a REST API with user authentication and a React frontend. Use PostgreSQL for data storage."></textarea>
+      <button class="submit-btn" id="submitBtn" onclick="runQuery()">
+        <span>▶</span> Run CircuitLM
+      </button>
+    </div>
+  </div>
+
+  <!-- Trace -->
+  <div class="panel">
+    <div class="panel-header">
+      <span class="panel-title">State Transition Trace</span>
+      <span id="traceStats" style="font-size:12px;color:var(--text-muted)"></span>
+    </div>
+    <div class="panel-body" id="tracePanel">
+      <div class="empty-state">
+        <div class="emoji">🔍</div>
+        <p>Submit a query to see CircuitLM's<br>finite-state reasoning trace</p>
+      </div>
+    </div>
+  </div>
+
+  <!-- Infrastructure Decision -->
+  <div class="panel">
+    <div class="panel-header">
+      <span class="panel-title">Infrastructure Plan</span>
+      <span class="cost-badge" id="costBadge" style="display:none">$0/mo</span>
+    </div>
+    <div class="panel-body" id="servicesPanel">
+      <div class="empty-state">
+        <div class="emoji">🏗️</div>
+        <p>Services and connections will appear here</p>
+      </div>
+    </div>
+  </div>
+
+  <!-- Reasoning -->
+  <div class="panel">
+    <div class="panel-header">
+      <span class="panel-title">Decision Reasoning</span>
+    </div>
+    <div class="panel-body" id="reasoningPanel">
+      <div class="empty-state">
+        <div class="emoji">💭</div>
+        <p>Decision trace will appear here</p>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<footer>
+  CircuitLM — Pure CP-SAT finite-state reasoning · Zero API calls · <a href="https://github.com/toxzak-svg/circuit_lm" target="_blank">View on GitHub</a>
+</footer>
+
+<script>
+  async function runQuery() {
+    const input = document.getElementById('queryInput').value.trim();
+    if (!input) return;
+
+    const btn = document.getElementById('submitBtn');
+    btn.disabled = true;
+    btn.textContent = '⚡ Reasoning...';
+
+    // Show loading
+    document.getElementById('tracePanel').innerHTML = '<div class="loading"><div class="loading-spinner"></div>Analyzing input...</div>';
+    document.getElementById('servicesPanel').innerHTML = '<div class="loading"><div class="loading-spinner"></div>Provisioning infrastructure plan...</div>';
+    document.getElementById('reasoningPanel').innerHTML = '<div class="loading"><div class="loading-spinner"></div>Tracing decision path...</div>';
+    document.getElementById('costBadge').style.display = 'none';
+
+    try {
+      const response = await fetch('/api/query', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ input })
+      });
+
+      const data = await response.json();
+      renderResults(data);
+    } catch (err) {
+      document.getElementById('tracePanel').innerHTML = '<div class="empty-state"><div class="emoji">❌</div><p>Error: ' + err.message + '</p></div>';
+    } finally {
+      btn.disabled = false;
+      btn.innerHTML = '<span>▶</span> Run CircuitLM';
+    }
+  }
+
+  function renderResults(data) {
+    // Stats
+    document.getElementById('traceStats').textContent =
+      `${data.tokens.length} tokens → ${data.steps.length} steps`;
+
+    // Trace
+    const tracePanel = document.getElementById('tracePanel');
+    if (data.steps && data.steps.length > 0) {
+      let html = '<div class="stats-bar">';
+      html += `<div class="stat"><span class="stat-val">${data.steps.length}</span><span class="stat-label">Steps</span></div>`;
+      const states = new Set(data.steps.map(s => s.state)).size;
+      html += `<div class="stat"><span class="stat-val">${states}</span><span class="stat-label">States</span></div>`;
+      html += `<div class="stat"><span class="stat-val">${data.tokens.length}</span><span class="stat-label">Tokens</span></div>`;
+      html += '</div>';
+
+      data.steps.forEach((step, i) => {
+        const isActive = i === data.steps.length - 1;
+        const char = String.fromCharCode(step.token % 26 + 97);
+        html += `<div class="trace-step${isActive ? ' active' : ''}">
+          <span class="step-num">#${step.step}</span>
+          <span class="token-display">"${char}"</span>
+          <span class="state-badge">state ${step.state}</span>
+          <div class="top-k">top_k: [${(step.top_k || []).slice(0,5).join(', ')}]</div>
+        </div>`;
+      });
+      tracePanel.innerHTML = html;
+    } else {
+      tracePanel.innerHTML = '<div class="empty-state"><p>No trace data available</p></div>';
+    }
+
+    // Services
+    const servicesPanel = document.getElementById('servicesPanel');
+    if (data.response && data.response.services) {
+      let html = '';
+      data.response.services.forEach((svc, i) => {
+        const icons = { database: '🗄️', backend: '⚙️', frontend: '🖥️', auth: '🔐', websocket: '⚡' };
+        const icon = icons[svc.type] || '📦';
+        html += `<div class="service-card">
+          <div class="service-icon ${svc.type}">${icon}</div>
+          <div class="service-info">
+            <div class="service-name">${svc.name}</div>
+            <div class="service-provider">${svc.provider}</div>
+          </div>
+        </div>`;
+        if (i < data.response.services.length - 1) {
+          html += `<div class="connection-arrow">↓ REST/JSON ↓</div>`;
+        }
+      });
+      servicesPanel.innerHTML = html;
+
+      // Cost
+      const costBadge = document.getElementById('costBadge');
+      costBadge.textContent = data.response.total_cost_estimate;
+      costBadge.style.display = 'inline-block';
+    }
+
+    // Reasoning
+    const reasoningPanel = document.getElementById('reasoningPanel');
+    if (data.response && data.response.reasoning) {
+      let html = '';
+      data.response.reasoning.forEach((r, i) => {
+        html += `<div class="reasoning-item">
+          <span class="reasoning-num">${i+1}.</span>
+          <span class="reasoning-text">${r}</span>
+        </div>`;
+      });
+      if (data.response.deployment_steps) {
+        html += '<hr style="border-color:var(--border);margin:12px 0;">';
+        html += '<div style="font-size:12px;color:var(--text-muted);margin-bottom:6px;">DEPLOYMENT STEPS</div>';
+        data.response.deployment_steps.forEach(step => {
+          html += `<div class="reasoning-item" style="font-size:13px;">
+            <span class="reasoning-num" style="color:var(--green);">✓</span>
+            <span class="reasoning-text">${step}</span>
+          </div>`;
+        });
+      }
+      reasoningPanel.innerHTML = html;
+    }
+  }
+</script>
+
+</body>
+</html>
