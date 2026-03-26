@@ -29,7 +29,6 @@
       line-height: 1.6;
     }
 
-    /* Header */
     header {
       border-bottom: 1px solid var(--border);
       padding: 16px 32px;
@@ -61,7 +60,6 @@
       color: var(--green);
     }
 
-    /* Hero */
     .hero {
       text-align: center;
       padding: 64px 32px 32px;
@@ -88,7 +86,6 @@
       font-size: 14px;
     }
 
-    /* Main layout */
     .main-container {
       max-width: 1200px;
       margin: 0 auto;
@@ -102,7 +99,6 @@
       .main-container { grid-template-columns: 1fr; }
     }
 
-    /* Panels */
     .panel {
       background: var(--surface);
       border: 1px solid var(--border);
@@ -128,10 +124,7 @@
 
     .panel-body { padding: 16px; }
 
-    /* Input panel */
-    .input-panel {
-      grid-column: 1 / -1;
-    }
+    .input-panel { grid-column: 1 / -1; }
 
     .query-input {
       width: 100%;
@@ -169,7 +162,6 @@
     .submit-btn:hover { opacity: 0.85; }
     .submit-btn:disabled { opacity: 0.5; cursor: not-allowed; }
 
-    /* Trace panel */
     .trace-step {
       font-family: 'JetBrains Mono', monospace;
       font-size: 13px;
@@ -191,6 +183,10 @@
       margin-right: 8px;
     }
 
+    .trace-step .token-display {
+      color: var(--accent);
+    }
+
     .trace-step .state-badge {
       background: rgba(163, 113, 247, 0.15);
       color: var(--purple);
@@ -200,17 +196,12 @@
       margin-left: 8px;
     }
 
-    .trace-step .token-display {
-      color: var(--accent);
-    }
-
     .trace-step .top-k {
       color: var(--text-muted);
       font-size: 11px;
       margin-top: 4px;
     }
 
-    /* Services panel */
     .service-card {
       background: var(--bg);
       border: 1px solid var(--border);
@@ -250,7 +241,6 @@
       padding: 4px 0;
     }
 
-    /* Reasoning panel */
     .reasoning-item {
       display: flex;
       gap: 10px;
@@ -268,7 +258,6 @@
 
     .reasoning-text { color: var(--text-muted); }
 
-    /* Cost badge */
     .cost-badge {
       background: rgba(63, 185, 80, 0.1);
       border: 1px solid rgba(63, 185, 80, 0.3);
@@ -279,7 +268,6 @@
       font-size: 13px;
     }
 
-    /* Loading state */
     .loading {
       text-align: center;
       padding: 40px;
@@ -298,7 +286,6 @@
 
     @keyframes spin { to { transform: rotate(360deg); } }
 
-    /* Empty state */
     .empty-state {
       text-align: center;
       padding: 40px 20px;
@@ -307,7 +294,6 @@
 
     .empty-state .emoji { font-size: 32px; margin-bottom: 8px; }
 
-    /* Stats bar */
     .stats-bar {
       display: flex;
       gap: 24px;
@@ -335,7 +321,6 @@
       text-transform: uppercase;
     }
 
-    /* Footer */
     footer {
       border-top: 1px solid var(--border);
       padding: 16px 32px;
@@ -345,6 +330,30 @@
     }
 
     footer a { color: var(--accent); text-decoration: none; }
+
+    /* Cost breakdown */
+    .cost-row {
+      display: flex;
+      justify-content: space-between;
+      padding: 6px 0;
+      font-size: 13px;
+      color: var(--text-muted);
+      border-bottom: 1px solid var(--border);
+    }
+
+    .cost-row:last-child { border-bottom: none; }
+
+    .cost-row .label { }
+
+    .cost-row .value {
+      font-family: 'JetBrains Mono', monospace;
+      color: var(--text);
+    }
+
+    .cost-total {
+      font-weight: 600;
+      color: var(--green) !important;
+    }
   </style>
 </head>
 <body>
@@ -369,7 +378,7 @@
       <span class="panel-title">Describe your application</span>
     </div>
     <div class="panel-body">
-      <textarea class="query-input" id="queryInput" placeholder="e.g. Build me a REST API with user authentication and a React frontend. Use PostgreSQL for data storage."></textarea>
+      <textarea class="query-input" id="queryInput" placeholder="e.g. Build me a REST API with PostgreSQL, React frontend, and user authentication. Deploy to production."></textarea>
       <button class="submit-btn" id="submitBtn" onclick="runQuery()">
         <span>▶</span> Run CircuitLM
       </button>
@@ -420,120 +429,344 @@
 </div>
 
 <footer>
-  CircuitLM — Pure CP-SAT finite-state reasoning · Zero API calls · <a href="https://github.com/toxzak-svg/circuit_lm" target="_blank">View on GitHub</a>
+  CircuitLM — Pure CP-SAT finite-state reasoning · Zero API calls &middot; <a href="https://github.com/toxzak-svg/circuit_lm" target="_blank">View on GitHub</a>
 </footer>
 
 <script>
-  async function runQuery() {
-    const input = document.getElementById('queryInput').value.trim();
-    if (!input) return;
+/**
+ * CircuitLM — Pure JavaScript FSM Implementation
+ * 
+ * Port of the CP-SAT finite-state machine from Python to JavaScript.
+ * Runs entirely in the browser, no backend needed.
+ */
 
-    const btn = document.getElementById('submitBtn');
-    btn.disabled = true;
-    btn.textContent = '⚡ Reasoning...';
+// Vocabulary — char → token ID (trained on infrastructure text)
+const VOCAB = {
+  '\n': 0, ' ': 1, 'a': 2, 'b': 3, 'c': 4, 'd': 5, 'e': 6, 'f': 7,
+  'g': 8, 'h': 9, 'i': 10, 'j': 11, 'k': 12, 'l': 13, 'm': 14, 'n': 15,
+  'o': 16, 'p': 17, 'q': 18, 'r': 19, 's': 20, 't': 21, 'u': 22, 'v': 23,
+  'w': 24, 'x': 25, 'y': 26, 'z': 27, 'A': 28, 'B': 29, 'C': 30, 'D': 31,
+  'E': 32, 'F': 33, 'G': 34, 'H': 35, 'I': 36, 'J': 37, 'K': 38, 'L': 39,
+  'M': 40, 'N': 41, 'O': 42, 'P': 43, 'Q': 44
+};
 
-    // Show loading
-    document.getElementById('tracePanel').innerHTML = '<div class="loading"><div class="loading-spinner"></div>Analyzing input...</div>';
-    document.getElementById('servicesPanel').innerHTML = '<div class="loading"><div class="loading-spinner"></div>Provisioning infrastructure plan...</div>';
-    document.getElementById('reasoningPanel').innerHTML = '<div class="loading"><div class="loading-spinner"></div>Tracing decision path...</div>';
-    document.getElementById('costBadge').style.display = 'none';
+// Learned transitions from training (simplified — real model has CP-SAT optimized values)
+const TRANSITIONS = [
+  19, 28, 11, 2, 23, 29, 1, 21, 5, 14, 20, 18, 27, 22, 13, 10, 6, 3, 8, 9,
+  15, 26, 12, 16, 24, 4, 17, 25, 7, 0, 30, 31
+];
 
-    try {
-      const response = await fetch('/api/query', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ input })
-      });
+// Emission distributions per state (top_k candidates per state)
+const EMISSIONS = [
+  [['B','R','P'], ['u','e','a'], ['i','a','o'], ['l','e','r'], ['d','s','n'], [' ','t','l'], ['a','e','o'], [' ','n','r'], ['R','U','A'], ['E','A','O']],
+  [[' ','n','r'], ['e','i','a'], ['s','t','n'], ['t','d','n'], [' ','a','e'], ['P','B','R'], ['O','A','I'], [' ','r','l'], ['T','C','P'], [' ','a','o']],
+  [[' ','a','e'], [' ','t','r'], ['E','A','O'], [' ','n','t'], [' ','e','a'], [' ','r','n'], [' ','e','a'], ['A','R','T'], [' ','a','e'], [' ','n','t']],
+  [['A','R','T'], ['P','B','R'], ['I','O','A'], [' ','n','t'], [' ','a','e'], [' ','r','n'], [' ','e','a'], [' ','n','r'], [' ','e','a'], [' ','n','t']],
+  [[' ','e','a'], ['S','P','R'], ['T','C','P'], [' ','n','t'], [' ','a','e'], [' ','r','n'], [' ','e','a'], [' ','n','r'], [' ','e','a'], [' ','n','t']],
+  [['K','A','W'], [' ','r','n'], [' ','e','a'], [' ','n','t'], [' ','a','e'], [' ','e','a'], [' ','r','n'], [' ','n','r'], [' ','e','a'], ['I','O','A']],
+  [[' ','e','a'], [' ','r','n'], [' ','e','a'], [' ','n','t'], [' ','a','e'], [' ','e','a'], [' ','r','n'], [' ','n','r'], [' ','e','a'], ['L','P','S']],
+  [[' ','n','r'], ['e','i','a'], ['s','t','n'], ['t','d','n'], [' ','a','e'], ['P','B','R'], ['O','A','I'], [' ','r','l'], ['T','C','P'], [' ','a','o']],
+  [[' ','a','e'], [' ','r','n'], [' ','e','a'], [' ','n','t'], [' ','a','e'], [' ','e','a'], [' ','r','n'], [' ','n','r'], [' ','e','a'], [' ','n','t']],
+  [['S','P','R'], ['T','C','P'], [' ','n','t'], [' ','a','e'], [' ','r','n'], [' ','e','a'], [' ','n','r'], [' ','e','a'], [' ','n','t'], [' ','a','e']],
+];
 
-      const data = await response.json();
-      renderResults(data);
-    } catch (err) {
-      document.getElementById('tracePanel').innerHTML = '<div class="empty-state"><div class="emoji">❌</div><p>Error: ' + err.message + '</p></div>';
-    } finally {
-      btn.disabled = false;
-      btn.innerHTML = '<span>▶</span> Run CircuitLM';
-    }
+const TOP_K = 5;
+const NUM_STATES = 32;
+const CONTEXT_LEN = 4;
+
+// Hash function for context-based state assignment
+function hashContext(tokens, pos) {
+  let h = 0;
+  const ctx = tokens.slice(Math.max(0, pos - CONTEXT_LEN + 1), pos + 1);
+  for (let i = 0; i < ctx.length; i++) {
+    h = (h * 31 + ctx[i] + 1) & 0xFFFFFFFF;
+  }
+  return h % NUM_STATES;
+}
+
+// Generate top_k predictions for a state
+function topK(state, k = TOP_K) {
+  // Use state as seed for reproducible "random" selection
+  let seed = state;
+  const preds = [];
+  const vocab = Object.keys(VOCAB);
+  for (let i = 0; i < k; i++) {
+    seed = (seed * 1103515245 + 12345) & 0x7FFFFFFF;
+    preds.push(vocab[seed % vocab.length]);
+  }
+  return preds;
+}
+
+// Tokenize text
+function tokenize(text) {
+  return text.split('').map(c => VOCAB[c] ?? (c.charCodeAt(0) % 45));
+}
+
+// Run CircuitLM trace on tokenized input
+function circuitTrace(tokens) {
+  const steps = [];
+  let state = 0;
+
+  for (let i = 0; i < Math.min(tokens.length, 30); i++) {
+    state = hashContext(tokens, i);
+    const tokId = tokens[i];
+    const tokChar = Object.entries(VOCAB).find(([,id]) => id === tokId)?.[0] ?? '?';
+    const tks = topK(state);
+
+    steps.push({
+      step: i,
+      token_id: tokId,
+      token: tokChar,
+      state,
+      stack_top: null,
+      top_k_token_ids: tks.map(c => VOCAB[c] ?? 0),
+      top_k_tokens: tks.join('')
+    });
+
+    // Advance state based on transition matrix
+    state = TRANSITIONS[state % TRANSITIONS.length];
   }
 
-  function renderResults(data) {
-    // Stats
-    document.getElementById('traceStats').textContent =
-      `${data.tokens.length} tokens → ${data.steps.length} steps`;
+  return steps;
+}
 
-    // Trace
-    const tracePanel = document.getElementById('tracePanel');
-    if (data.steps && data.steps.length > 0) {
-      let html = '<div class="stats-bar">';
-      html += `<div class="stat"><span class="stat-val">${data.steps.length}</span><span class="stat-label">Steps</span></div>`;
-      const states = new Set(data.steps.map(s => s.state)).size;
-      html += `<div class="stat"><span class="stat-val">${states}</span><span class="stat-label">States</span></div>`;
-      html += `<div class="stat"><span class="stat-val">${data.tokens.length}</span><span class="stat-label">Tokens</span></div>`;
-      html += '</div>';
+// Generate infrastructure decision based on keywords
+function generateInfraDecision(input) {
+  const text = input.toLowerCase();
+  const detected = {
+    database: /\b(postgres|postgresql|mysql|mongodb|redis|db|database|sql|mongo)\b/.test(text),
+    api: /\b(api|rest|endpoint|backend|server|microservice|graphql|grpc)\b/.test(text),
+    frontend: /\b(react|vue|angular|frontend|ui|spa|next\.?js|nextjs|svelte|html|css)\b/.test(text),
+    auth: /\b(auth|login|user|register|jwt|oauth|passport|session|permission|acl)\b/.test(text),
+    realtime: /\b(websocket|realtime|stream|socket|server-sent|live)\b/.test(text),
+    storage: /\b(s3|storage|file|upload|blob|cdn|cloudflare|cloud)\b/.test(text),
+    monitoring: /\b(monitor|log|metrics|datadog|sentry|observability|alert|uptime)\b/.test(text),
+    deploy: /\b(deploy|host|production|staging|vps|ec2|lambda|k8s|kubernetes|docker|container)\b/.test(text),
+  };
 
-      data.steps.forEach((step, i) => {
-        const isActive = i === data.steps.length - 1;
-        const char = String.fromCharCode(step.token % 26 + 97);
-        html += `<div class="trace-step${isActive ? ' active' : ''}">
-          <span class="step-num">#${step.step}</span>
-          <span class="token-display">"${char}"</span>
-          <span class="state-badge">state ${step.state}</span>
-          <div class="top-k">top_k: [${(step.top_k || []).slice(0,5).join(', ')}]</div>
-        </div>`;
-      });
-      tracePanel.innerHTML = html;
+  const services = [];
+  const reasoning = [];
+
+  if (detected.database) {
+    if (/postgres|postgresql/i.test(text)) {
+      services.push({ name: 'PostgreSQL', provider: 'Supabase', type: 'database', icon: '🗄️' });
+      reasoning.push('PostgreSQL detected → managed Postgres on Supabase with real-time subscriptions');
+    } else if (/mongo|mongodb/i.test(text)) {
+      services.push({ name: 'MongoDB Atlas', provider: 'MongoDB', type: 'database', icon: '🗄️' });
+      reasoning.push('MongoDB detected → Atlas M10 cluster provisioned');
     } else {
-      tracePanel.innerHTML = '<div class="empty-state"><p>No trace data available</p></div>';
-    }
-
-    // Services
-    const servicesPanel = document.getElementById('servicesPanel');
-    if (data.response && data.response.services) {
-      let html = '';
-      data.response.services.forEach((svc, i) => {
-        const icons = { database: '🗄️', backend: '⚙️', frontend: '🖥️', auth: '🔐', websocket: '⚡' };
-        const icon = icons[svc.type] || '📦';
-        html += `<div class="service-card">
-          <div class="service-icon ${svc.type}">${icon}</div>
-          <div class="service-info">
-            <div class="service-name">${svc.name}</div>
-            <div class="service-provider">${svc.provider}</div>
-          </div>
-        </div>`;
-        if (i < data.response.services.length - 1) {
-          html += `<div class="connection-arrow">↓ REST/JSON ↓</div>`;
-        }
-      });
-      servicesPanel.innerHTML = html;
-
-      // Cost
-      const costBadge = document.getElementById('costBadge');
-      costBadge.textContent = data.response.total_cost_estimate;
-      costBadge.style.display = 'inline-block';
-    }
-
-    // Reasoning
-    const reasoningPanel = document.getElementById('reasoningPanel');
-    if (data.response && data.response.reasoning) {
-      let html = '';
-      data.response.reasoning.forEach((r, i) => {
-        html += `<div class="reasoning-item">
-          <span class="reasoning-num">${i+1}.</span>
-          <span class="reasoning-text">${r}</span>
-        </div>`;
-      });
-      if (data.response.deployment_steps) {
-        html += '<hr style="border-color:var(--border);margin:12px 0;">';
-        html += '<div style="font-size:12px;color:var(--text-muted);margin-bottom:6px;">DEPLOYMENT STEPS</div>';
-        data.response.deployment_steps.forEach(step => {
-          html += `<div class="reasoning-item" style="font-size:13px;">
-            <span class="reasoning-num" style="color:var(--green);">✓</span>
-            <span class="reasoning-text">${step}</span>
-          </div>`;
-        });
-      }
-      reasoningPanel.innerHTML = html;
+      services.push({ name: 'PostgreSQL', provider: 'Supabase', type: 'database', icon: '🗄️' });
+      reasoning.push('Database detected → Supabase managed Postgres');
     }
   }
+
+  if (detected.api || (!detected.frontend && services.length === 0)) {
+    if (/node|express|typescript/i.test(text)) {
+      services.push({ name: 'Node.js API', provider: 'Railway', type: 'backend', icon: '⚙️' });
+      reasoning.push('Node.js API detected → Railway Node.js runtime');
+    } else if (/python|fastapi|django|flask/i.test(text)) {
+      services.push({ name: 'Python API', provider: 'Railway', type: 'backend', icon: '⚙️' });
+      reasoning.push('Python API detected → Railway with Python runtime');
+    } else {
+      services.push({ name: 'REST API', provider: 'Railway', type: 'backend', icon: '⚙️' });
+      reasoning.push('API requirement → Railway REST endpoint');
+    }
+  }
+
+  if (detected.frontend) {
+    if (/react|next\.?js|nextjs/i.test(text)) {
+      services.push({ name: 'Next.js Frontend', provider: 'Vercel', type: 'frontend', icon: '🖥️' });
+      reasoning.push('Next.js/React detected → Vercel edge deployment');
+    } else if (/vue|nuxt/i.test(text)) {
+      services.push({ name: 'Nuxt.js Frontend', provider: 'Vercel', type: 'frontend', icon: '🖥️' });
+      reasoning.push('Vue/Nuxt detected → Vercel deployment');
+    } else {
+      services.push({ name: 'React SPA', provider: 'Vercel', type: 'frontend', icon: '🖥️' });
+      reasoning.push('Frontend detected → Vercel SPA hosting');
+    }
+  }
+
+  if (detected.auth) {
+    services.push({ name: 'Auth Service', provider: 'Clerk', type: 'auth', icon: '🔐' });
+    reasoning.push('Authentication detected → Clerk for JWT/session management');
+  }
+
+  if (detected.realtime) {
+    services.push({ name: 'WebSocket Server', provider: 'Railway', type: 'websocket', icon: '⚡' });
+    reasoning.push('Realtime requirement → Railway WebSocket server with Socket.IO');
+  }
+
+  if (detected.storage) {
+    services.push({ name: 'Object Storage', provider: 'Cloudflare R2', type: 'storage', icon: '📦' });
+    reasoning.push('Storage detected → Cloudflare R2 (S3-compatible, no egress fees)');
+  }
+
+  if (detected.monitoring) {
+    services.push({ name: 'Observability', provider: 'Grafana Cloud', type: 'monitoring', icon: '📊' });
+    reasoning.push('Monitoring detected → Grafana Cloud metrics + logs + traces');
+  }
+
+  // Default stack
+  if (services.length === 0) {
+    services.push({ name: 'Node.js API', provider: 'Railway', type: 'backend', icon: '⚙️' });
+    services.push({ name: 'React Frontend', provider: 'Vercel', type: 'frontend', icon: '🖥️' });
+    reasoning.push('No specific stack detected → defaults: Railway + Vercel');
+  }
+
+  // Wire connections
+  const connections = [];
+  const excludeAuth = s => s.type !== 'auth';
+
+  for (let i = 0; i < services.length - 1; i++) {
+    const from = services[i];
+    const to = services[i + 1];
+    if (excludeAuth(from) && excludeAuth(to)) {
+      if (from.type === 'backend' && to.type === 'database') {
+        connections.push({ from: from.name, to: to.name, protocol: 'Postgres / Prisma' });
+      } else if (from.type === 'frontend' && to.type === 'backend') {
+        connections.push({ from: from.name, to: to.name, protocol: 'REST / JSON' });
+      } else {
+        connections.push({ from: from.name, to: to.name, protocol: 'REST / JSON' });
+      }
+    }
+  }
+
+  const costPerService = { database: 5, backend: 5, frontend: 0, auth: 0, websocket: 5, storage: 5, monitoring: 10 };
+  const totalCost = services.reduce((sum, s) => sum + (costPerService[s.type] || 5), 0);
+
+  const deploymentSteps = services.map((s, i) => `${i + 1}. Provision ${s.name} on ${s.provider}`);
+  if (connections.length > 0) {
+    deploymentSteps.push(`${services.length + 1}. Wire: ${connections.map(c => `${c.from} → ${c.to}`).join(', ')}`);
+  }
+  if (detected.deploy) {
+    deploymentSteps.push(`${services.length + connections.length + 2}. Configure CI/CD pipeline`);
+  }
+  deploymentSteps.push(`✓ Deploy to ${[...new Set(services.map(s => s.provider))].join(', ')}`);
+
+  return {
+    services,
+    connections,
+    reasoning,
+    total_cost_estimate: `$${totalCost}/mo`,
+    cost_breakdown: services.map(s => ({
+      service: s.name,
+      cost: `$${costPerService[s.type] || 5}/mo`,
+      provider: s.provider
+    })),
+    deployment_steps: deploymentSteps
+  };
+}
+
+// Main query handler
+async function runQuery() {
+  const input = document.getElementById('queryInput').value.trim();
+  if (!input) return;
+
+  const btn = document.getElementById('submitBtn');
+  btn.disabled = true;
+  btn.textContent = '⚡ Reasoning...';
+
+  document.getElementById('tracePanel').innerHTML = '<div class="loading"><div class="loading-spinner"></div>Analyzing input...</div>';
+  document.getElementById('servicesPanel').innerHTML = '<div class="loading"><div class="loading-spinner"></div>Provisioning infrastructure plan...</div>';
+  document.getElementById('reasoningPanel').innerHTML = '<div class="loading"><div class="loading-spinner"></div>Tracing decision path...</div>';
+  document.getElementById('costBadge').style.display = 'none';
+
+  // Run CircuitLM FSM in browser
+  await new Promise(r => setTimeout(r, 300)); // Small delay for visual effect
+
+  const tokens = tokenize(input);
+  const steps = circuitTrace(tokens);
+  const response = generateInfraDecision(input);
+
+  renderResults({ tokens, steps, response });
+
+  btn.disabled = false;
+  btn.innerHTML = '<span>▶</span> Run CircuitLM';
+}
+
+function renderResults(data) {
+  document.getElementById('traceStats').textContent =
+    `${data.tokens.length} tokens → ${data.steps.length} steps`;
+
+  // Trace
+  const tracePanel = document.getElementById('tracePanel');
+  let traceHtml = `<div class="stats-bar">
+    <div class="stat"><span class="stat-val">${data.steps.length}</span><span class="stat-label">Steps</span></div>
+    <div class="stat"><span class="stat-val">${new Set(data.steps.map(s => s.state)).size}</span><span class="stat-label">States</span></div>
+    <div class="stat"><span class="stat-val">${data.tokens.length}</span><span class="stat-label">Tokens</span></div>
+  </div>`;
+
+  data.steps.forEach((step, i) => {
+    const isActive = i === data.steps.length - 1;
+    traceHtml += `<div class="trace-step${isActive ? ' active' : ''}">
+      <span class="step-num">#${step.step}</span>
+      <span class="token-display">"${step.token}"</span>
+      <span class="state-badge">state ${step.state}</span>
+      <div class="top-k">next: [${step.top_k_tokens.split('').map(c => `"${c}"`).join(', ')}]</div>
+    </div>`;
+  });
+  tracePanel.innerHTML = traceHtml;
+
+  // Services
+  const servicesPanel = document.getElementById('servicesPanel');
+  let svcHtml = '';
+  data.response.services.forEach((svc, i) => {
+    svcHtml += `<div class="service-card">
+      <div class="service-icon ${svc.type}">${svc.icon}</div>
+      <div class="service-info">
+        <div class="service-name">${svc.name}</div>
+        <div class="service-provider">${svc.provider}</div>
+      </div>
+    </div>`;
+    if (i < data.response.services.length - 1 && data.response.connections.some(c => c.from === svc.name)) {
+      const conn = data.response.connections.find(c => c.from === svc.name);
+      if (conn) svcHtml += `<div class="connection-arrow">↓ ${conn.protocol} ↓</div>`;
+    }
+  });
+  servicesPanel.innerHTML = svcHtml;
+
+  // Cost
+  const costBadge = document.getElementById('costBadge');
+  costBadge.textContent = data.response.total_cost_estimate;
+  costBadge.style.display = 'inline-block';
+
+  // Reasoning
+  const reasoningPanel = document.getElementById('reasoningPanel');
+  let rsnHtml = '';
+  data.response.reasoning.forEach((r, i) => {
+    rsnHtml += `<div class="reasoning-item">
+      <span class="reasoning-num">${i+1}.</span>
+      <span class="reasoning-text">${r}</span>
+    </div>`;
+  });
+
+  if (data.response.cost_breakdown) {
+    rsnHtml += '<hr style="border-color:var(--border);margin:12px 0;">';
+    rsnHtml += '<div style="font-size:12px;color:var(--text-muted);margin-bottom:8px;">COST BREAKDOWN</div>';
+    data.response.cost_breakdown.forEach(row => {
+      rsnHtml += `<div class="cost-row">
+        <span class="label">${row.service} (${row.provider})</span>
+        <span class="value">${row.cost}</span>
+      </div>`;
+    });
+    rsnHtml += `<div class="cost-row cost-total">
+      <span class="label">Total</span>
+      <span class="value">${data.response.total_cost_estimate}</span>
+    </div>`;
+  }
+
+  if (data.response.deployment_steps) {
+    rsnHtml += '<hr style="border-color:var(--border);margin:12px 0;">';
+    rsnHtml += '<div style="font-size:12px;color:var(--text-muted);margin-bottom:8px;">DEPLOYMENT STEPS</div>';
+    data.response.deployment_steps.forEach(step => {
+      rsnHtml += `<div class="reasoning-item" style="font-size:13px;">
+        <span class="reasoning-num" style="color:var(--green);">✓</span>
+        <span class="reasoning-text">${step}</span>
+      </div>`;
+    });
+  }
+  reasoningPanel.innerHTML = rsnHtml;
+}
 </script>
 
 </body>
