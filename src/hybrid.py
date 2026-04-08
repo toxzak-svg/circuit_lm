@@ -392,10 +392,12 @@ class NeuralCorrector(nn.Module):
         # Token embeddings for context
         token_emb = self.token_embed(context)  # (batch, context_len, embed_dim)
         
-        # Encode context with LSTM (bidirectional)
-        lstm_out, (h_n, c_n) = self.context_lstm(token_emb)
-        # Concatenate forward and backward final hidden states
-        context_enc = torch.cat([h_n[-2], h_n[-1]], dim=1)  # (batch, embed_dim * 2)
+        # Context encoding — SSD or LSTM
+        if self.use_ssd:
+            context_enc = self.context_layer(token_emb)  # (batch, embed_dim)
+        else:
+            lstm_out, (h_n, c_n) = self.context_lstm(token_emb)
+            context_enc = torch.cat([h_n[-2], h_n[-1]], dim=1)  # (batch, embed_dim * 2)
 
         # Project circuit probabilities
         circuit_enc = self.circuit_proj(circuit_probs)  # (batch, embed_dim)
@@ -406,7 +408,7 @@ class NeuralCorrector(nn.Module):
             stack_emb,
             context_enc,
             circuit_enc,
-        ], dim=1)  # (batch, embed_dim * 3 + embed_dim * 2)
+        ], dim=1)
 
         # Deep MLP
         logits = self.mlp(combined)  # (batch, vocab_size)
@@ -812,11 +814,12 @@ def train_hybrid(
         embed_dim=embed_dim,
         hidden_dim=hidden_dim,
         num_layers=num_layers,
+        use_ssd=use_ssd,
     )
     
-    # Print model size
+    ssd_note = " (SSD)" if use_ssd else " (LSTM)"
     num_params = sum(p.numel() for p in corrector.parameters())
-    print(f"NeuralCorrector: {num_params:,} parameters")
+    print(f"NeuralCorrector{ssd_note}: {num_params:,} parameters")
     
     # Training setup
     optimizer = torch.optim.Adam(corrector.parameters(), lr=lr)
