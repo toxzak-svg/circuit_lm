@@ -1,13 +1,14 @@
 # Project Status
 
-Last updated: 2026-03-08 (rev 3)
+Last updated: 2026-04-08 (rev 4)
 
 ## Snapshot
 
 - Repo state: working tree was clean when this status snapshot was created.
-- Recent validation commit: `c0f46e6` (`feat: add benchmark_serialization script and tests`)
+- Recent validation commit: `f3a47d5` (`kaggle notebook: 10K->6K vocab, 4 corrector sizes`)
 - Python validation target: `3.12`
 - Packaging: editable install works with `py -3.12 -m pip install --user -e .[dev]`
+- ⚠️ Local test run not possible (no py -3.12 on this machine); last confirmed: 199 passed (2026-03-08)
 
 ## What Is Working
 
@@ -216,10 +217,44 @@ pda-md    pda   msgpack      16     30     51778       10       38   1
 - All six roundtrip checks pass (`ok=1`).
 - **Compression ratio (PDA)**: PDA-sm msgpack 26,680 bytes ÷ JSON 377,610 ≈ 7.1% (~14× smaller). PDA-md 51,778 ÷ 739,648 ≈ 7.0%. Binary format is well within the earlier 20–40 KB target for PDA-sm.
 
+## Kaggle Training Pipeline (2026-04-08)
+
+**Kernel:** `zacharymaronek/circuit-lm-6k-training`
+**Notebook:** `kaggle_training_notebook.ipynb`
+**Dataset:** `zacharymaronek/circuit-lm-personal` → `all_personal_training.txt` (7.4 MB)
+
+Trains a hybrid CircuitLM (integer PDA circuit + neural corrector) with 6,144-token BPE vocab.
+
+| Step | What happens |
+|------|-------------|
+| 1 | Clone repo + install ortools, msgpack, sentencepiece, torch |
+| 2 | Load personal training data from Kaggle dataset |
+| 3 | Build 6K BPE tokenizer (sweet spot for 7MB personal data) |
+| 4 | Train PDA circuit via OR-Tools CP-SAT (STATE_BITS=6, stack_depth=4) |
+| 5 | Save circuit + tokenizer (shared across all corrector sizes) |
+| 6 | Train 4 corrector sizes (tiny/small/medium/large) on GPU |
+| 7 | Results summary + download links |
+| 8 | Generate side-by-side samples from all 4 sizes |
+
+**Corrector sizes:**
+
+| Size | embed_dim | hidden_dim | num_layers | context | Params |
+|------|-----------|------------|------------|---------|--------|
+| Tiny | 64 | 128 | 2 | 32 | ~1.5 M |
+| Small | 128 | 256 | 3 | 64 | ~5 M |
+| Medium | 256 | 512 | 4 | 64 | ~20 M |
+| Large | 512 | 1024 | 4 | 128 | ~80 M |
+
+**Runtime:** GPU required. P100 (16GB) handles Medium comfortably. ~30-60 min total.
+
+**Note:** Old kernel `zacharymaronek/circuitlm` errored because `notebook.ipynb` checked for a local file path. Fixed by pushing `kaggle_training_notebook.ipynb` with corrected Kaggle dataset path.
+
 ## Next Recommended Steps
 
-1. Consider extending `load_model` to auto-detect JSON vs msgpack by file extension (e.g. `.json` vs `.msgpack`).
-2. If joint-PDA pop is still not found at 120 s in other settings, investigate solver warm-start or constraint relaxation.
+1. Run the Kaggle training notebook (enable GPU, ~30-60 min)
+2. Download trained correctors + circuit
+3. Wire into Rust inference kernel (GPU-free local inference)
+4. Consider extending `load_model` to auto-detect JSON vs msgpack by file extension
 
 ## How To Update This File
 
