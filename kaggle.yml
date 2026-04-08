@@ -1,0 +1,10 @@
+project: circuitlm
+kernel_slug: zacharymaronek/circuitlm
+code_file: notebook.ipynb
+accelerator: none
+internet: false
+privacy: private
+datasets: []
+competitions: []
+outputs:
+  download_to: .kaggle-outputs/

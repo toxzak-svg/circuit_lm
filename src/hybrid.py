@@ -77,6 +77,54 @@ class HybridDataset(Dataset):
         }
 
 
+class SSDContext(nn.Module):
+    """SSD-style linear recurrence for context encoding.
+    
+    Replaces bidirectional LSTM with a structured linear recurrence:
+        h_{t+1} = A @ h_t + B @ token_embed(t)
+    
+    No gates. No forget/input/reset. Two learnable matrices A and B.
+    The hidden state is a fixed-size vector that's actually inspectable.
+    
+    Based on Mamba-3's insight that structured state spaces are compiler-friendly
+    and more efficient than LSTM while being competitive on sequence tasks.
+    """
+    def __init__(self, embed_dim: int):
+        super().__init__()
+        self.embed_dim = embed_dim
+        # State transition matrix A — (embed_dim, embed_dim)
+        self.A = nn.Parameter(torch.randn(embed_dim, embed_dim) * 0.01)
+        # Input projection B — (embed_dim, embed_dim)
+        self.B = nn.Parameter(torch.randn(embed_dim, embed_dim) * 0.01)
+        # Output projection — maps hidden state to context vector
+        self.C = nn.Parameter(torch.randn(embed_dim, embed_dim) * 0.01)
+        # Learnable initial state
+        self.h0 = nn.Parameter(torch.zeros(embed_dim))
+
+    def forward(self, token_embeddings: torch.Tensor) -> torch.Tensor:
+        """Process sequence of token embeddings with SSD recurrence.
+        
+        Args:
+            token_embeddings: (batch, seq_len, embed_dim)
+        
+        Returns:
+            (batch, embed_dim) — final hidden state as context vector
+        """
+        batch, seq_len, _ = token_embeddings.shape
+        
+        # Initialize hidden state
+        h = self.h0.unsqueeze(0).expand(batch, -1)  # (batch, embed_dim)
+        
+        # SSD recurrence — no gates, just linear update + input
+        for t in range(seq_len):
+            h = torch.matmul(h, self.A.t()) + torch.matmul(token_embeddings[:, t], self.B.t())
+            # Normalize for stability (like layer norm but simpler)
+            h = h / (h.norm(dim=-1, keepdim=True) + 1e-8)
+        
+        # Final hidden state as context representation
+        return torch.matmul(h, self.C.t())
+
+
 class ResidualCorrector(nn.Module):
     """Residual neural corrector that predicts delta to add to circuit output.
     
@@ -91,7 +139,7 @@ class ResidualCorrector(nn.Module):
     Input: (circuit_state, stack_top, context, circuit_histogram_counts)
     Output: Delta logits to ADD to circuit histogram
     
-    Uses int8 quantization for CPU efficiency.
+    Uses SSD-style context encoder instead of LSTM for efficiency at large vocab.
     """
     
     def __init__(
@@ -104,6 +152,7 @@ class ResidualCorrector(nn.Module):
         hidden_dim: int = 128,
         num_layers: int = 2,
         use_quantization: bool = False,
+        use_ssd: bool = True,
     ):
         super().__init__()
         self.vocab_size = vocab_size
@@ -114,6 +163,7 @@ class ResidualCorrector(nn.Module):
         self.hidden_dim = hidden_dim
         self.num_layers = num_layers
         self.use_quantization = use_quantization
+        self.use_ssd = use_ssd
         
         # Embeddings for discrete inputs
         self.state_embed = nn.Embedding(num_states + 1, embed_dim)
@@ -126,15 +176,19 @@ class ResidualCorrector(nn.Module):
             nn.ReLU(),
         )
         
-        # Context encoder
-        self.context_lstm = nn.LSTM(
-            embed_dim, embed_dim, num_layers=1,
-            batch_first=True, bidirectional=True
-        )
+        # Context encoder — SSD (linear recurrence) or LSTM
+        if use_ssd:
+            self.context_layer = SSDContext(embed_dim)
+            context_out = embed_dim  # single final state vector
+        else:
+            self.context_lstm = nn.LSTM(
+                embed_dim, embed_dim, num_layers=1,
+                batch_first=True, bidirectional=True
+            )
+            context_out = embed_dim * 2  # bidirectional concat
         
         # Combined feature dimension
-        lstm_out = embed_dim * 2
-        combined_dim = embed_dim * 3 + lstm_out
+        combined_dim = embed_dim * 3 + context_out
         
         # Deep MLP that outputs DELTA (not final prediction)
         layers = []
@@ -174,12 +228,17 @@ class ResidualCorrector(nn.Module):
         stack_emb = self.stack_embed(stack_idx)
         
         # Token embeddings for context
-        token_emb = self.token_embed(context)
-        lstm_out, (h_n, _) = self.context_lstm(token_emb)
-        context_enc = torch.cat([h_n[-2], h_n[-1]], dim=1)
+        token_emb = self.token_embed(context)  # (batch, context_len, embed_dim)
+        
+        # Context encoding — SSD (linear recurrence) or LSTM
+        if self.use_ssd:
+            context_enc = self.context_layer(token_emb)  # (batch, embed_dim)
+        else:
+            lstm_out, (h_n, _) = self.context_lstm(token_emb)
+            context_enc = torch.cat([h_n[-2], h_n[-1]], dim=1)  # (batch, embed_dim*2)
         
         # Project circuit counts (integer histogram -> features)
-        circuit_enc = self.hist_proj(circuit_counts.float())
+        circuit_enc = self.hist_proj(circuit_counts.float())  # (batch, embed_dim)
         
         # Combine
         combined = torch.cat([
@@ -239,6 +298,8 @@ class NeuralCorrector(nn.Module):
       small:  embed_dim=32,  hidden_dim=64,  num_layers=1
       medium: embed_dim=64,  hidden_dim=128, num_layers=2  
       large:  embed_dim=128, hidden_dim=256, num_layers=3
+    
+    Uses SSD context encoder by default (use_ssd=False for LSTM).
     """
 
     def __init__(
@@ -250,6 +311,7 @@ class NeuralCorrector(nn.Module):
         embed_dim: int = 64,
         hidden_dim: int = 128,
         num_layers: int = 2,
+        use_ssd: bool = True,
     ):
         super().__init__()
         self.vocab_size = vocab_size
@@ -259,6 +321,7 @@ class NeuralCorrector(nn.Module):
         self.embed_dim = embed_dim
         self.hidden_dim = hidden_dim
         self.num_layers = num_layers
+        self.use_ssd = use_ssd
 
         # Embeddings for discrete inputs
         self.state_embed = nn.Embedding(num_states + 1, embed_dim)  # +1 for padding
@@ -275,15 +338,19 @@ class NeuralCorrector(nn.Module):
         else:
             self.circuit_proj = nn.Linear(vocab_size, embed_dim)
 
-        # Context encoder - LSTM for better sequential understanding
-        self.context_lstm = nn.LSTM(
-            embed_dim, embed_dim, num_layers=1, 
-            batch_first=True, bidirectional=True
-        )
+        # Context encoder — SSD (linear recurrence) or LSTM
+        if use_ssd:
+            self.context_layer = SSDContext(embed_dim)
+            context_out = embed_dim
+        else:
+            self.context_lstm = nn.LSTM(
+                embed_dim, embed_dim, num_layers=1, 
+                batch_first=True, bidirectional=True
+            )
+            context_out = embed_dim * 2  # bidirectional
         
         # Combined hidden layer
-        lstm_out = embed_dim * 2  # bidirectional
-        combined_dim = embed_dim * 3 + lstm_out  # state + stack + (bidir lstm) + circuit
+        combined_dim = embed_dim * 3 + context_out  # state + stack + context + circuit
         
         # Deep MLP with skip connections
         layers = []
@@ -706,6 +773,7 @@ def train_hybrid(
     embed_dim: int = 64,
     hidden_dim: int = 128,
     num_layers: int = 2,
+    use_ssd: bool = True,
 ):
     """Train the neural corrector.
 
@@ -823,6 +891,7 @@ def train_residual_hybrid(
     embed_dim: int = 64,
     hidden_dim: int = 128,
     num_layers: int = 2,
+    use_ssd: bool = True,
 ) -> ResidualHybridModel:
     """Train the residual neural corrector.
     
@@ -885,10 +954,12 @@ def train_residual_hybrid(
         embed_dim=embed_dim,
         hidden_dim=hidden_dim,
         num_layers=num_layers,
+        use_ssd=use_ssd,
     )
     
+    ssd_note = " (SSD)" if use_ssd else " (LSTM)"
     num_params = sum(p.numel() for p in corrector.parameters())
-    print(f"ResidualCorrector: {num_params:,} parameters")
+    print(f"ResidualCorrector{ssd_note}: {num_params:,} parameters")
     
     optimizer = torch.optim.Adam(corrector.parameters(), lr=lr)
     criterion = nn.CrossEntropyLoss()

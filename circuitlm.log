@@ -1,0 +1,40 @@
+[{"stream_name":"stderr","time":6.912342606,"data":"0.00s - Debugger warning: It seems that frozen modules are being used, which may\n"}
+,{"stream_name":"stderr","time":6.912420944,"data":"0.00s - make the debugger miss breakpoints. Please pass -Xfrozen_modules=off\n"}
+,{"stream_name":"stderr","time":6.912427479,"data":"0.00s - to python to disable frozen modules.\n"}
+,{"stream_name":"stderr","time":6.91243047,"data":"0.00s - Note: Debugging will proceed. Set PYDEVD_DISABLE_FILE_VALIDATION=1 to disable this validation.\n"}
+,{"stream_name":"stderr","time":7.571722883,"data":"0.00s - Debugger warning: It seems that frozen modules are being used, which may\n"}
+,{"stream_name":"stderr","time":7.5717585530000004,"data":"0.00s - make the debugger miss breakpoints. Please pass -Xfrozen_modules=off\n"}
+,{"stream_name":"stderr","time":7.571763131,"data":"0.00s - to python to disable frozen modules.\n"}
+,{"stream_name":"stderr","time":7.571766096,"data":"0.00s - Note: Debugging will proceed. Set PYDEVD_DISABLE_FILE_VALIDATION=1 to disable this validation.\n"}
+,{"stream_name":"stdout","time":13.37934099,"data":"Note: you may need to restart the kernel to use updated packages.\n"}
+,{"stream_name":"stdout","time":13.37942183,"data":"Installed\n"}
+,{"stream_name":"stderr","time":13.732393406,"data":"Traceback (most recent call last):\n"}
+,{"stream_name":"stderr","time":13.732430174,"data":"  File \"\u003cstring\u003e\", line 1, in \u003cmodule\u003e\n"}
+,{"stream_name":"stderr","time":13.732438480999999,"data":"  File \"/usr/local/lib/python3.12/dist-packages/papermill/execute.py\", line 131, in execute_notebook\n"}
+,{"stream_name":"stderr","time":13.732463587,"data":"    raise_for_execution_errors(nb, output_path)\n"}
+,{"stream_name":"stderr","time":13.732685661,"data":"  File \"/usr/local/lib/python3.12/dist-packages/papermill/execute.py\", line 251, in raise_for_execution_errors\n"}
+,{"stream_name":"stderr","time":13.732740427,"data":"    raise error\n"}
+,{"stream_name":"stderr","time":13.732826561,"data":"papermill.exceptions.PapermillExecutionError: \n"}
+,{"stream_name":"stderr","time":13.732845542,"data":"---------------------------------------------------------------------------\n"}
+,{"stream_name":"stderr","time":13.732852072,"data":"Exception encountered at \"In [2]\":\n"}
+,{"stream_name":"stderr","time":13.732857808,"data":"---------------------------------------------------------------------------\n"}
+,{"stream_name":"stderr","time":13.732863337,"data":"FileNotFoundError                         Traceback (most recent call last)\n"}
+,{"stream_name":"stderr","time":13.732868633,"data":"/tmp/ipykernel_24/3127203293.py in \u003ccell line: 0\u003e()\n"}
+,{"stream_name":"stderr","time":13.732875024,"data":"     19 \n"}
+,{"stream_name":"stderr","time":13.732880313,"data":"     20 if data_path is None:\n"}
+,{"stream_name":"stderr","time":13.732886027,"data":"---\u003e 21     raise FileNotFoundError(\n"}
+,{"stream_name":"stderr","time":13.732892361,"data":"     22         f'Data file not found.\\n'\n"}
+,{"stream_name":"stderr","time":13.73297449,"data":"     23         f'Upload all_personal_training.txt to Kaggle: '\n"}
+,{"stream_name":"stderr","time":13.73300897,"data":"\n"}
+,{"stream_name":"stderr","time":13.733044721,"data":"FileNotFoundError: Data file not found.\n"}
+,{"stream_name":"stderr","time":13.733086449,"data":"Upload all_personal_training.txt to Kaggle: github.com/toxzak-svg/circuit_lm/blob/master/all_personal_training.txt\n"}
+,{"stream_name":"stderr","time":13.733129358,"data":"\n"}
+,{"stream_name":"stderr","time":16.30806114,"data":"/usr/local/lib/python3.12/dist-packages/mistune.py:435: SyntaxWarning: invalid escape sequence '\\|'\n"}
+,{"stream_name":"stderr","time":16.30812664,"data":"  cells[i][c] = re.sub('\\\\\\\\\\|', '|', cell)\n"}
+,{"stream_name":"stderr","time":16.494487809,"data":"/usr/local/lib/python3.12/dist-packages/nbconvert/filters/filter_links.py:36: SyntaxWarning: invalid escape sequence '\\_'\n"}
+,{"stream_name":"stderr","time":16.49452117,"data":"  text = re.sub(r'_', '\\_', text) # Escape underscores in display text\n"}
+,{"stream_name":"stderr","time":17.19306709,"data":"[NbConvertApp] Converting notebook __notebook__.ipynb to notebook\n"}
+,{"stream_name":"stderr","time":17.563902656,"data":"[NbConvertApp] Writing 14296 bytes to __notebook__.ipynb\n"}
+,{"stream_name":"stderr","time":20.494693227,"data":"[NbConvertApp] Converting notebook __notebook__.ipynb to html\n"}
+,{"stream_name":"stderr","time":21.52942883,"data":"[NbConvertApp] Writing 300268 bytes to __results__.html\n"}
+]

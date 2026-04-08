@@ -339,6 +339,7 @@ def cmd_hybrid_train(args: argparse.Namespace) -> int:
         f"[hybrid-train] circuit={args.circuit!r}  data={args.data!r}  out={args.out!r}"
         f"  epochs={args.epochs}  max_examples={args.max_examples}"
     )
+    use_ssd = args.ssd and not args.lstm
     train_hybrid(
         circuit_path=args.circuit,
         data_path=args.data,
@@ -349,6 +350,7 @@ def cmd_hybrid_train(args: argparse.Namespace) -> int:
         circuit_weight=args.circuit_weight,
         max_examples=args.max_examples,
         max_context_len=args.max_context_len,
+        use_ssd=use_ssd,
     )
     return 0
 
@@ -607,6 +609,10 @@ def build_parser() -> argparse.ArgumentParser:
                          help="Max training examples (default: 50000).")
     p_hybrid.add_argument("--max-context-len", type=_int_ge_0, default=32, metavar="N",
                          help="Context length for corrector (default: 32).")
+    p_hybrid.add_argument("--ssd", action="store_true",
+                         help="Use SSD context encoder instead of LSTM (faster at large vocab).")
+    p_hybrid.add_argument("--lstm", action="store_true",
+                         help="Force LSTM context encoder (overrides --ssd).")
     p_hybrid.set_defaults(func=cmd_hybrid_train)
 
     # -- chat ----------------------------------------------------------------
