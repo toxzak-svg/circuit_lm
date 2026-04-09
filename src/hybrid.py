@@ -1,4 +1,4 @@
-"""Hybrid model: CircuitLM + Neural Corrector.
+﻿"""Hybrid model: CircuitLM + Neural Corrector.
 
 The idea:
 1. CircuitLM handles structural patterns (state transitions)
@@ -1027,6 +1027,9 @@ if __name__ == '__main__':
     parser.add_argument('--lr', type=float, default=1e-3)
     parser.add_argument('--circuit-weight', type=float, default=0.5)
     parser.add_argument('--max-examples', type=int, default=50000)
+    parser.add_argument('--use-ssd', action='store_true', help='Use SSD context encoder (default: True, use --no-ssd to disable')
+    parser.add_argument('--no-ssd', dest='use_ssd', action='store_false', help='Disable SSD context encoder')
+
     
     args = parser.parse_args()
     
@@ -1039,4 +1042,5 @@ if __name__ == '__main__':
         args.lr,
         args.circuit_weight,
         args.max_examples,
+        use_ssd=args.use_ssd,
     )
