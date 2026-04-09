@@ -195,3 +195,5 @@ if __name__ == "__main__":
 
 
 # TODO (rotator): **BPE in hybrid** + **hybrid in CLI** — unblocks larger vocab and easier experimentation.
+
+# TODO (rotator): ~~**BPE in hybrid** + **hybrid in CLI** — unblocks larger vocab and easier experimentation.~~ ✅ (done)
