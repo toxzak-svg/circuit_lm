@@ -192,3 +192,6 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
+
+# TODO (rotator): **BPE in hybrid** + **hybrid in CLI** — unblocks larger vocab and easier experimentation.
