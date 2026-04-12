@@ -12,6 +12,14 @@ import argparse
 import sys
 import time
 from pathlib import Path
+import os
+
+# Allow imports from src/ and circuit_lm/ subdirs when run as script
+_script_dir = Path(__file__).parent
+_repo_root = _script_dir.parent
+if str(_repo_root) not in sys.path:
+    sys.path.insert(0, str(_repo_root))
+os.chdir(_repo_root)
 
 # Ensure src in path
 src_path = Path(__file__).parent.parent / "src"
@@ -22,7 +30,7 @@ from circuit_lm.io import save_model, load_model
 from circuit_lm.tokenizer import Tokenizer
 from circuit_lm.train_cpsat import train as train_fsm
 from circuit_lm.train_joint_pda_cpsat import train_joint_pda as train_pda
-from circuit_lm.hybrid import train_hybrid
+from src.hybrid import train_hybrid
 
 
 def main():
