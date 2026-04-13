@@ -23,14 +23,15 @@ from pathlib import Path
 # Add src to path
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
-from gguf import (
+from gguf_recovery import (
     parse_gguf,
     dequantize_tensor,
     ResidualRecovery,
     RecoveryConfig,
     EParameterization,
+    QUANT_TYPES,
 )
-from gguf.calibration import CalibrationDataset, CalibrationRunner
+from gguf_recovery.calibration import CalibrationDataset, CalibrationRunner
 
 
 def main():
@@ -73,11 +74,11 @@ def main():
     # Step 2: Build tensor info for recovery
     print("[2/6] Preparing tensor information...")
     tensor_infos = []
-    from gguf import QUANT_TYPES
+    # QUANT_TYPES already imported above
 
     for t in tensors:
         qt = QUANT_TYPES.get(t.dtype)
-        block_size = qt.block_size if qt else 32
+        block_size = qt[1] if qt else 32
         tensor_infos.append({
             "name": t.name,
             "n_elements": t.n_elements,
