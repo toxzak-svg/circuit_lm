@@ -17,22 +17,39 @@ if gguf_lib is None or not hasattr(gguf_lib, 'GGUFReader'):
 
 
 QUANT_TYPES = {
-    0: ('Q4_K_M', 32, 2),   # 4-bit K-quant with meta, block=32, groupsize=2
-    1: ('Q4_0', 32, 2),
-    2: ('Q4_1', 32, 2),
-    3: ('Q5_0', 32, 2),
-    4: ('Q5_1', 32, 2),
-    5: ('Q8_0', 32, 1),
-    6: ('Q8_1', 32, 1),
-    7: ('Q2_K', 256, 2),
-    8: ('Q3_K', 256, 2),
-    9: ('Q4_K', 256, 2),
-    10: ('Q5_K', 256, 2),
-    11: ('Q6_K', 256, 1),
-    12: ('F16', 1, 2),
-    13: ('BF16', 1, 2),
-    14: ('F32', 1, 4),
-    15: ('F64', 1, 8),
+    # From gguf.GGMLQuantizationType enum — GGUF v3
+    0: ('F32', 1, 4),       # Float32
+    1: ('F16', 1, 2),       # Float16
+    2: ('Q4_0', 32, 2),     # 4-bit, 32 elem/block, 2 bytes meta + 16 bytes data
+    3: ('Q4_1', 32, 2),     # 4-bit with offset, 32 elem/block, 4 bytes meta + 16 bytes data
+    6: ('Q5_0', 32, 2),     # 5-bit
+    7: ('Q5_1', 32, 2),     # 5-bit with offset
+    8: ('Q8_0', 32, 1),     # 8-bit, 32 elem/block, 4 bytes scale + 32 bytes data
+    9: ('Q8_1', 32, 1),     # 8-bit with offset
+    10: ('Q2_K', 256, 2),   # 2-bit K-quantization, 256 elem/block
+    11: ('Q3_K', 256, 2),   # 3-bit K-quantization, 256 elem/block
+    12: ('Q4_K', 256, 2),   # 4-bit K-quantization, 256 elem/block
+    13: ('Q5_K', 256, 2),   # 5-bit K-quantization, 256 elem/block
+    14: ('Q6_K', 256, 1),   # 6-bit K-quantization, 256 elem/block
+    15: ('Q8_K', 256, 1),   # 8-bit K-quantization, 256 elem/block
+    16: ('IQ2_XXS', 32, 2), # Incremental 2-bit
+    17: ('IQ2_XS', 32, 2),
+    18: ('IQ3_XXS', 32, 2),
+    19: ('IQ1_S', 32, 2),
+    20: ('IQ4_NL', 32, 2),   # 4-bit non-linear
+    21: ('IQ3_S', 32, 2),
+    22: ('IQ2_S', 32, 2),
+    23: ('IQ4_XS', 32, 2),
+    24: ('I8', 1, 1),        # Int8
+    25: ('I16', 1, 2),       # Int16
+    26: ('I32', 1, 4),       # Int32
+    27: ('I64', 1, 8),       # Int64
+    28: ('F64', 1, 8),       # Float64
+    29: ('IQ1_M', 32, 2),
+    30: ('BF16', 1, 2),      # Brain Float16
+    34: ('TQ1_0', 32, 2),
+    35: ('TQ2_0', 32, 2),
+    39: ('MXFP4', 32, 2),
 }
 
 
