@@ -21,3 +21,10 @@ chat_data_500k.txt
 chat_data_full.txt
 combined_data.txt
 chat_export/
+<<<<<<< Updated upstream
+=======
+*.gguf
+*.zip
+*.tar.gz
+*.txt
+>>>>>>> Stashed changes

@@ -629,6 +629,9 @@ class HybridModel:
             'embed_dim': self.corrector.embed_dim,
             'hidden_dim': self.corrector.hidden_dim,
             'num_layers': self.corrector.num_layers,
+            'max_context_len': self.corrector.max_context_len,
+            'use_ssd': self.corrector.use_ssd,
+            'stack_depth': self.corrector.stack_depth,
         }, path)
 
     @classmethod
@@ -645,24 +648,57 @@ class HybridModel:
         """
         circuit, tokenizer = load_model(circuit_path)
 
-        stack_depth = getattr(circuit, 'stack_depth', 4)
-
-        # Load checkpoint to get architecture params
+        # Load checkpoint and infer architecture from the saved state dict.
+        # Older checkpoints may contain stale metadata values, so prefer the weights.
         checkpoint = torch.load(corrector_path, map_location='cpu')
-        embed_dim = checkpoint.get('embed_dim', 64)
-        hidden_dim = checkpoint.get('hidden_dim', 128)
-        num_layers = checkpoint.get('num_layers', 2)
-        
+        state_dict = checkpoint['corrector_state_dict']
+
+        if 'state_embed.weight' in state_dict:
+            embed_dim = state_dict['state_embed.weight'].shape[1]
+        elif 'token_embed.weight' in state_dict:
+            embed_dim = state_dict['token_embed.weight'].shape[1]
+        elif 'circuit_proj.2.weight' in state_dict:
+            embed_dim = state_dict['circuit_proj.2.weight'].shape[0]
+        elif 'circuit_proj.weight' in state_dict:
+            embed_dim = state_dict['circuit_proj.weight'].shape[0]
+        else:
+            embed_dim = checkpoint.get('embed_dim', 64)
+
+        if 'mlp.0.weight' in state_dict:
+            hidden_dim = state_dict['mlp.0.weight'].shape[0]
+        else:
+            hidden_dim = checkpoint.get('hidden_dim', 128)
+
+        mlp_weight_keys = [k for k in state_dict.keys() if k.startswith('mlp.') and k.endswith('.weight')]
+        if mlp_weight_keys:
+            num_layers = max(1, len(mlp_weight_keys) - 1)
+        else:
+            num_layers = checkpoint.get('num_layers', 2)
+
+        max_context_len = checkpoint.get('max_context_len', 32)
+        use_ssd = checkpoint.get('use_ssd')
+        stack_depth = checkpoint.get('stack_depth')
+
+        if use_ssd is None:
+            use_ssd = 'context_layer.A' in state_dict or 'context_layer.B' in state_dict
+
+        if stack_depth is None:
+            if 'stack_embed.weight' in state_dict:
+                stack_depth = state_dict['stack_embed.weight'].shape[0] - 1
+            else:
+                stack_depth = getattr(circuit, 'stack_depth', 4)
+
         corrector = NeuralCorrector(
             vocab_size=circuit.vocab_size,
             num_states=circuit.num_states,
             stack_depth=stack_depth,
+            max_context_len=max_context_len,
             embed_dim=embed_dim,
             hidden_dim=hidden_dim,
             num_layers=num_layers,
+            use_ssd=use_ssd,
         )
-        checkpoint = torch.load(corrector_path, map_location='cpu')
-        corrector.load_state_dict(checkpoint['corrector_state_dict'])
+        corrector.load_state_dict(state_dict)
 
         weight = checkpoint.get('circuit_weight', circuit_weight)
         return cls(circuit, corrector, weight), tokenizer
@@ -873,10 +909,7 @@ def train_hybrid(
     
     # Save
     hybrid = HybridModel(circuit, corrector, circuit_weight)
-    torch.save({
-        'corrector_state_dict': corrector.state_dict(),
-        'circuit_weight': circuit_weight,
-    }, output_path)
+    hybrid.save(output_path)
     print(f"Saved to {output_path}")
     
     return hybrid
