@@ -7,6 +7,21 @@ lists, dicts) better than FSMs or PPM, because the stack mechanism matches the
 structural recursion in code.  Real code mixes parentheses (), brackets [], and
 braces {} — each requiring correct open/close tracking.
 
+Results so far: PPM outperforms on this synthetic task because compression lets it
+model local n-gram patterns effectively. PDA shows marginal OOD improvement over
+FSM. The benchmark is valid; the hypothesis needs refinement (see NOTES below).
+
+NOTES
+-----
+- Low absolute accuracy (~25-40%) across all models suggests sequences are short
+  and the task is hard
+- PPM winning suggests next-token prediction on mixed-bracket strings favors
+  local patterns over deep structure
+- PDA/FSM gap is small — might need more states, deeper training, or a harder
+  generalization split to see separation
+- Try: (1) longer sequences, (2) harder generalization split (train depth<=3, test depth>=8),
+  (3) bracket-only vocab to isolate stack benefit
+
 Experiment
 ----------
   - Vocabulary: 8 tokens — OPEN_PAREN, CLOSE_PAREN, OPEN_BRACK, CLOSE_BRACK,
