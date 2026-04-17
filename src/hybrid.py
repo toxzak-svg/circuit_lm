@@ -14,7 +14,8 @@ from __future__ import annotations
 import json
 import random
 from dataclasses import dataclass
-from pathlib import Path
+from collections.abc import Iterator
+from pathlib import Path as pathlib_Path
 
 import torch
 import torch.nn as nn
@@ -797,7 +798,111 @@ def build_dataset(
     return examples
 
 
-def train_hybrid(
+def iter_hybrid_examples(
+    circuit: CircuitLM | PDACircuitLM,
+    tokenizer: Tokenizer,
+    data_path: str,
+    max_examples: int = 100000,
+    max_context_len: int = 32,
+    chunk_size: int = 2000,
+) -> Iterator[list["TrainingExample"]]:
+    """Streaming build_dataset — yields chunks of TrainingExamples without loading the full file.
+
+    Maintains circuit state across the entire file so stack/FSM state persists
+    between lines. Yields batches of up to chunk_size examples to limit memory.
+
+    Args:
+        circuit:      Trained CircuitLM or PDACircuitLM.
+        tokenizer:    Tokenizer for the circuit.
+        data_path:    Path to plain-text training corpus.
+        max_examples: Maximum total examples before stopping.
+        max_context_len: How many prior tokens to include in context window.
+        chunk_size:   Examples per yielded batch (controls memory per batch).
+
+    Yields:
+        Lists of TrainingExample, each chunk_size long (last chunk may be smaller).
+    """
+    is_pda = isinstance(circuit, PDACircuitLM)
+
+    # Persistent circuit state — survives across file boundaries
+    state = 0
+    stack: list[int] = []
+    examples: list[TrainingExample] = []
+    total_seen = 0
+
+    path = pathlib_Path(data_path)
+    with path.open(encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+
+            token_ids = tokenizer.encode(line)
+            if len(token_ids) < 2:
+                continue
+
+            for i, target_token in enumerate(token_ids[1:], 1):
+                total_seen += 1
+
+                # Get circuit prediction BEFORE seeing the target
+                if is_pda:
+                    circuit_hist = circuit.config_histogram(state, stack)
+                else:
+                    circuit_hist = circuit.state_histogram(state)
+
+                context_start = max(0, i - max_context_len)
+                context = token_ids[context_start:i]
+
+                example = TrainingExample(
+                    circuit_state=state,
+                    stack_top=stack[-1] if stack else -1,
+                    context_ids=context,
+                    target_token=target_token,
+                    circuit_histogram=circuit_hist,
+                )
+                examples.append(example)
+
+                # Update persistent circuit state for next token
+                if is_pda:
+                    state, stack = circuit.step(state, stack, target_token)
+                else:
+                    state = circuit.next_state(state, target_token)
+
+                # Yield a chunk when full
+                if len(examples) >= chunk_size:
+                    yield examples
+                    examples = []
+
+                if total_seen >= max_examples:
+                    break
+
+            if total_seen >= max_examples:
+                break
+
+    # Final chunk
+    if examples:
+        yield examples
+
+
+def build_dataset_streaming(
+    circuit: CircuitLM | PDACircuitLM,
+    tokenizer: Tokenizer,
+    data_path: str,
+    max_examples: int = 100000,
+    max_context_len: int = 32,
+) -> list["TrainingExample"]:
+    """Convenience wrapper — collects all streamed examples into a list.
+
+    Use this when you need a list (e.g. for random-access indexing).
+    For large corpora use :func:`iter_hybrid_examples` directly.
+    """
+    all_examples: list[TrainingExample] = []
+    for chunk in iter_hybrid_examples(circuit, tokenizer, data_path, max_examples, max_context_len):
+        all_examples.extend(chunk)
+    return all_examples
+
+
+def train_hybrid_streaming(
     circuit_path: str,
     data_path: str,
     output_path: str,
