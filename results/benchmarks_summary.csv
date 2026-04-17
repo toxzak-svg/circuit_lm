@@ -1,0 +1,15 @@
+benchmark,metric,model,value,note
+depth_gen,accuracy_bp_ood_avg,PDA-2ph,5343,out-of-distribution depths 4-8
+depth_gen,accuracy_bp_ood_avg,PDA-jt,5108,out-of-distribution depths 4-8
+depth_gen,accuracy_bp_ood_avg,FSM,4655,out-of-distribution depths 4-8
+depth_gen,accuracy_bp_ood_avg,PPM,4671,out-of-distribution depths 4-8
+serialization,bytes,fsm-sm_json,7020,states=8 vocab=30
+serialization,bytes,fsm-sm_msgpack,1072,states=8 vocab=30
+serialization,bytes,pda-sm_json,375228,states=8 vocab=30
+serialization,bytes,pda-sm_msgpack,26428,states=8 vocab=30
+serialization,bytes,pda-md_json,739648,states=16 vocab=30
+serialization,bytes,pda-md_msgpack,51778,states=16 vocab=30
+code_bracket,accuracy_bp_ood_avg,PDA,2720,mismatched types OOD depths, vs FSM +4.6pp
+code_bracket,accuracy_bp_ood_avg,FSM,2261,mismatched types OOD depths
+code_bracket,accuracy_bp_ood_avg,PPM,3245,mismatched types OOD depths
+code_bracket,winner,PPM,1,PDA vs FSM +4.6pp, vs PPM -5.3pp
