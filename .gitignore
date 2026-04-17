@@ -26,3 +26,4 @@ chat_export/
 *.tar.gz
 *.txt
 bpe_tokenizer/Cargo.lock
+bpe_tokenizer/target/

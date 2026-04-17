@@ -1,0 +1,8 @@
+benchmark,metric,model,value,note
+depth_gen,accuracy_bp_ood_avg,PDA-2ph,5343,out-of-distribution depths 4-8
+depth_gen,accuracy_bp_ood_avg,PDA-jt,5108,out-of-distribution depths 4-8
+depth_gen,accuracy_bp_ood_avg,FSM,4655,out-of-distribution depths 4-8
+depth_gen,accuracy_bp_ood_avg,PPM,4671,out-of-distribution depths 4-8
+serialization,bytes,fsm-sm_json,7020,states=8 vocab=30
+serialization,bytes,pda-sm_json,377610,states=8 vocab=30
+serialization,bytes,pda-md_json,739648,states=16 vocab=30
