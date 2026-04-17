@@ -3,6 +3,7 @@
 Runs:
   1. Depth generalization (PDA vs FSM vs PPM) — reproduce_depth_generalization
   2. Serialization (JSON vs MessagePack) — benchmark_serialization
+  3. Code / bracket benchmark (mismatched types — PDA must track type+depth) — benchmark_code_v5
 
 Output: Markdown table to stdout; optional --csv-out for machine-readable.
 
@@ -35,6 +36,23 @@ def _run_depth_gen(seed: int, train_seqs: int, test_seqs_per_depth: int):
         seed=seed,
         train_seqs=train_seqs,
         test_seqs_per_depth=test_seqs_per_depth,
+        quiet=True,
+    )
+
+
+def _run_code_bracket_benchmark(seed: int, train_seqs: int, test_per_depth: int):
+    """Import and run the mismatched-bracket (code/bracket) benchmark."""
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        "benchmark_code_v5",
+        _REPO / "scripts" / "benchmark_code_v5.py",
+    )
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod.run(
+        train_seqs=train_seqs,
+        test_per_depth=test_per_depth,
+        seed=seed,
         quiet=True,
     )
 
@@ -123,6 +141,43 @@ def _main() -> None:
             "value": r["bytes"],
             "note": f"states={r['states']} vocab={r['vocab']}",
         })
+
+    # --- Code / bracket benchmark ---
+    if not args.quiet:
+        print("Running code/bracket benchmark (mismatched types, v5) ...")
+    bracket_result = _run_code_bracket_benchmark(
+        seed=args.seed,
+        train_seqs=300,
+        test_per_depth=80,
+    )
+    rows.append({
+        "benchmark": "code_bracket",
+        "metric": "accuracy_bp_ood_avg",
+        "model": "PDA",
+        "value": int(bracket_result["pda_ood"] * 100),
+        "note": f"mismatched types OOD depths, vs FSM {bracket_result['pda_fsm_delta']:+.1f}pp",
+    })
+    rows.append({
+        "benchmark": "code_bracket",
+        "metric": "accuracy_bp_ood_avg",
+        "model": "FSM",
+        "value": int(bracket_result["fsm_ood"] * 100),
+        "note": "mismatched types OOD depths",
+    })
+    rows.append({
+        "benchmark": "code_bracket",
+        "metric": "accuracy_bp_ood_avg",
+        "model": "PPM",
+        "value": int(bracket_result["ppm_ood"] * 100),
+        "note": "mismatched types OOD depths",
+    })
+    rows.append({
+        "benchmark": "code_bracket",
+        "metric": "winner",
+        "model": bracket_result["winner"],
+        "value": 1,
+        "note": f"PDA vs FSM {bracket_result['pda_fsm_delta']:+.1f}pp, vs PPM {bracket_result['pda_ppm_delta']:+.1f}pp",
+    })
 
     # --- Output ---
     if not args.quiet:

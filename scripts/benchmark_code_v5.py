@@ -126,47 +126,62 @@ def accuracy_pct(correct: int, total: int) -> float:
     return (correct / total) * 100.0 if total > 0 else 0.0
 
 
-def main():
-    parser = argparse.ArgumentParser(description="Mismatched bracket types benchmark (v5)")
-    parser.add_argument("--train-seqs", type=int, default=400)
-    parser.add_argument("--test-per-depth", type=int, default=80)
-    parser.add_argument("--seed", type=int, default=DEFAULT_SEED)
-    parser.add_argument("--fsm-states", type=int, default=FSM_STATE_BITS)
-    parser.add_argument("--pda-states", type=int, default=PDA_STATE_BITS)
-    args = parser.parse_args()
+def run(
+    train_seqs: int = 400,
+    test_per_depth: int = 80,
+    seed: int = DEFAULT_SEED,
+    fsm_states: int = FSM_STATE_BITS,
+    pda_states: int = PDA_STATE_BITS,
+    quiet: bool = False,
+) -> dict[str, float]:
+    """Run the mismatched-bracket benchmark and return OOD averages.
 
-    rng = random.Random(args.seed)
-    print(f"=== Mismatched bracket types (v5): stack must track type+depth ===")
-    print(f"Train: {args.train_seqs} seqs, depth <= {MAX_TRAIN_DEPTH}")
-    print(f"Test:  {args.test_per_depth} seqs per depth")
-    print()
+    Returns:
+        dict with keys: pda_ood, fsm_ood, ppm_ood, pda_fsm_delta, pda_ppm_delta, winner
+    """
+    rng = random.Random(seed)
 
-    print("Generating training data...")
-    train_seqs = gen_train_seqs(MAX_TRAIN_DEPTH, args.train_seqs, rng)
-    total_train_tokens = sum(len(s) for s in train_seqs)
-    print(f"  {len(train_seqs)} sequences, {total_train_tokens} tokens, avg len={total_train_tokens/len(train_seqs):.1f}")
+    if not quiet:
+        print(f"=== Mismatched bracket types (v5): stack must track type+depth ===")
+        print(f"Train: {train_seqs} seqs, depth <= {MAX_TRAIN_DEPTH}")
+        print(f"Test:  {test_per_depth} seqs per depth")
+        print()
 
-    print("\nTraining PDA...")
+    if not quiet:
+        print("Generating training data...")
+    train_seqs_list = gen_train_seqs(MAX_TRAIN_DEPTH, train_seqs, rng)
+    total_train_tokens = sum(len(s) for s in train_seqs_list)
+    if not quiet:
+        print(f"  {len(train_seqs_list)} sequences, {total_train_tokens} tokens, avg len={total_train_tokens/len(train_seqs_list):.1f}")
+
+    if not quiet:
+        print("\nTraining PDA...")
     t0 = time.monotonic_ns()
-    pda = train_pda(train_seqs, vocab_size=VOCAB_SIZE, state_bits=args.pda_states, stack_depth=PDA_STACK_DEPTH, max_push=1, max_pop=1, steps=PDA_STEPS)
-    print(f"  {(time.monotonic_ns() - t0) // 1_000_000}ms")
+    pda = train_pda(train_seqs_list, vocab_size=VOCAB_SIZE, state_bits=pda_states, stack_depth=PDA_STACK_DEPTH, max_push=1, max_pop=1, steps=PDA_STEPS)
+    if not quiet:
+        print(f"  {(time.monotonic_ns() - t0) // 1_000_000}ms")
 
-    print("Training FSM...")
+    if not quiet:
+        print("Training FSM...")
     t0 = time.monotonic_ns()
-    fsm = train_fsm(train_seqs, vocab_size=VOCAB_SIZE, state_bits=args.fsm_states, context_len=FSM_CONTEXT_LEN, steps=FSM_STEPS)
-    print(f"  {(time.monotonic_ns() - t0) // 1_000_000}ms")
+    fsm = train_fsm(train_seqs_list, vocab_size=VOCAB_SIZE, state_bits=fsm_states, context_len=FSM_CONTEXT_LEN, steps=FSM_STEPS)
+    if not quiet:
+        print(f"  {(time.monotonic_ns() - t0) // 1_000_000}ms")
 
-    print("Training PPM...")
+    if not quiet:
+        print("Training PPM...")
     t0 = time.monotonic_ns()
-    ppm = train_ppm(train_seqs, vocab_size=VOCAB_SIZE, order=PPM_ORDER)
-    print(f"  {(time.monotonic_ns() - t0) // 1_000_000}ms")
+    ppm = train_ppm(train_seqs_list, vocab_size=VOCAB_SIZE, order=PPM_ORDER)
+    if not quiet:
+        print(f"  {(time.monotonic_ns() - t0) // 1_000_000}ms")
 
-    print(f"\n{'Depth':<8} {'PDA':<10} {'FSM':<10} {'PPM':<10}")
-    print("-" * 60)
+    if not quiet:
+        print(f"\n{'Depth':<8} {'PDA':<10} {'FSM':<10} {'PPM':<10}")
+        print("-" * 60)
 
     results = []
     for depth in TEST_DEPTHS:
-        test_seqs = gen_test_seqs_per_depth(depth, args.test_per_depth, rng)
+        test_seqs = gen_test_seqs_per_depth(depth, test_per_depth, rng)
         if not test_seqs:
             continue
 
@@ -178,27 +193,62 @@ def main():
         fa = accuracy_pct(f["correct"], f["total"])
         ppa = accuracy_pct(pp["correct"], pp["total"])
 
-        ood = " [OOD]" if depth > MAX_TRAIN_DEPTH else ""
-        print(f"{depth:<8} {pa:>6.1f}%   {fa:>6.1f}%   {ppa:>6.1f}%   {ood}")
-        results.append({"depth": depth, "pda": pa, "fsm": fa, "ppm": ppa, "ood": depth > MAX_TRAIN_DEPTH})
+        ood = depth > MAX_TRAIN_DEPTH
+        if not quiet:
+            ood_str = " [OOD]" if ood else ""
+            print(f"{depth:<8} {pa:>6.1f}%   {fa:>6.1f}%   {ppa:>6.1f}%{ood_str}")
+        results.append({"depth": depth, "pda": pa, "fsm": fa, "ppm": ppa, "ood": ood})
 
     ood_r = [r for r in results if r["ood"]]
-    if ood_r:
-        print(f"\nOOD avg: PDA={sum(r['pda'] for r in ood_r)/len(ood_r):.1f}%, FSM={sum(r['fsm'] for r in ood_r)/len(ood_r):.1f}%, PPM={sum(r['ppm'] for r in ood_r)/len(ood_r):.1f}%")
-        print(f"  PDA vs FSM: {sum(r['pda'] for r in ood_r)/len(ood_r) - sum(r['fsm'] for r in ood_r)/len(ood_r):+.1f}pp | PDA vs PPM: {sum(r['pda'] for r in ood_r)/len(ood_r) - sum(r['ppm'] for r in ood_r)/len(ood_r):+.1f}pp")
+    pda_ood = sum(r['pda'] for r in ood_r) / len(ood_r) if ood_r else 0.0
+    fsm_ood = sum(r['fsm'] for r in ood_r) / len(ood_r) if ood_r else 0.0
+    ppm_ood = sum(r['ppm'] for r in ood_r) / len(ood_r) if ood_r else 0.0
 
-    winner = max(ood_r, key=lambda r: r['pda'] if r['ood'] else -999)
-    if winner['pda'] > winner['fsm'] and winner['pda'] > winner['ppm']:
-        print("*** PDA WINS ***")
-    else:
-        print(f"*** {'PPM' if winner['ppm'] > winner['fsm'] else 'FSM'} wins ***")
+    if not quiet and ood_r:
+        print(f"\nOOD avg: PDA={pda_ood:.1f}%, FSM={fsm_ood:.1f}%, PPM={ppm_ood:.1f}%")
+        print(f"  PDA vs FSM: {pda_ood - fsm_ood:+.1f}pp | PDA vs PPM: {pda_ood - ppm_ood:+.1f}pp")
 
+    winner = "PDA" if pda_ood > fsm_ood and pda_ood > ppm_ood else ("PPM" if ppm_ood > fsm_ood else "FSM")
+    if not quiet:
+        print(f"*** {winner} wins ***")
+
+    # Write CSV
     csv_path = pathlib.Path(__file__).parent.parent / "results" / "benchmark_code_v5_mismatched_types.csv"
     csv_path.parent.mkdir(exist_ok=True)
     with open(csv_path, "w") as f:
         f.write("depth,pda_acc,fsm_acc,ppm_acc,ood\n")
         for r in results:
             f.write(f"{r['depth']},{r['pda']:.2f},{r['fsm']:.2f},{r['ppm']:.2f},{r['ood']}\n")
+
+    return {
+        "pda_ood": pda_ood,
+        "fsm_ood": fsm_ood,
+        "ppm_ood": ppm_ood,
+        "pda_fsm_delta": pda_ood - fsm_ood,
+        "pda_ppm_delta": pda_ood - ppm_ood,
+        "winner": winner,
+        "ood_depths": len(ood_r),
+    }
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Mismatched bracket types benchmark (v5)")
+    parser.add_argument("--train-seqs", type=int, default=400)
+    parser.add_argument("--test-per-depth", type=int, default=80)
+    parser.add_argument("--seed", type=int, default=DEFAULT_SEED)
+    parser.add_argument("--fsm-states", type=int, default=FSM_STATE_BITS)
+    parser.add_argument("--pda-states", type=int, default=PDA_STATE_BITS)
+    args = parser.parse_args()
+
+    result = run(
+        train_seqs=args.train_seqs,
+        test_per_depth=args.test_per_depth,
+        seed=args.seed,
+        fsm_states=args.fsm_states,
+        pda_states=args.pda_states,
+        quiet=False,
+    )
+    csv_path = pathlib.Path(__file__).parent.parent / "results" / "benchmark_code_v5_mismatched_types.csv"
     print(f"CSV: {csv_path}")
 
 
