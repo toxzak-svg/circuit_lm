@@ -1,4 +1,4 @@
-﻿"""Hybrid model: CircuitLM + Neural Corrector.
+"""Hybrid model: CircuitLM + Neural Corrector.
 
 The idea:
 1. CircuitLM handles structural patterns (state transitions)
