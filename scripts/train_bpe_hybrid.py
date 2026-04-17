@@ -17,7 +17,7 @@ from circuit_lm.io import save_model, load_model
 from circuit_lm.tokenizer import Tokenizer
 from circuit_lm.train_cpsat import train as train_fsm
 from circuit_lm.train_joint_pda_cpsat import train_joint_pda as train_pda
-from hybrid import train_hybrid, HybridModel
+from hybrid import train_hybrid, train_hybrid_streaming, HybridModel
 
 
 def main():
@@ -35,6 +35,11 @@ def main():
     parser.add_argument("--batch-size", type=int, default=64, help="Batch size")
     parser.add_argument("--max-examples", type=int, default=100000, help="Max training examples")
     parser.add_argument("--circuit-weight", type=float, default=0.5, help="Circuit weight in blend")
+    parser.add_argument("--streaming", action="store_true", help="Use streaming data loader (for large corpora)")
+    parser.add_argument("--chunk-size", type=int, default=2000, help="Examples per streaming chunk")
+    parser.add_argument("--embed-dim", type=int, default=128, help="Corrector embedding dim (default 128, larger=256+)")
+    parser.add_argument("--hidden-dim", type=int, default=256, help="Corrector hidden dim (default 256, larger=512+)")
+    parser.add_argument("--num-layers", type=int, default=3, help="Corrector layers (default 3)")
     args = parser.parse_args()
 
     print("=" * 60)
@@ -108,15 +113,34 @@ def main():
     print(f"Reloaded circuit: vocab={circuit.vocab_size}, states={circuit.num_states}")
 
     t0 = time.time()
-    hybrid = train_hybrid(
-        circuit_path=args.circuit_out,
-        data_path=args.data,
-        output_path=args.corrector_out,
-        num_epochs=args.epochs,
-        batch_size=args.batch_size,
-        circuit_weight=args.circuit_weight,
-        max_examples=args.max_examples,
-    )
+    if args.streaming:
+        print(f"Using streaming loader (chunk_size={args.chunk_size})")
+        hybrid = train_hybrid_streaming(
+            circuit_path=args.circuit_out,
+            data_path=args.data,
+            output_path=args.corrector_out,
+            num_epochs=args.epochs,
+            batch_size=args.batch_size,
+            circuit_weight=args.circuit_weight,
+            max_examples=args.max_examples,
+            embed_dim=args.embed_dim,
+            hidden_dim=args.hidden_dim,
+            num_layers=args.num_layers,
+            chunk_size=args.chunk_size,
+        )
+    else:
+        hybrid = train_hybrid(
+            circuit_path=args.circuit_out,
+            data_path=args.data,
+            output_path=args.corrector_out,
+            num_epochs=args.epochs,
+            batch_size=args.batch_size,
+            circuit_weight=args.circuit_weight,
+            max_examples=args.max_examples,
+            embed_dim=args.embed_dim,
+            hidden_dim=args.hidden_dim,
+            num_layers=args.num_layers,
+        )
     corrector_time = time.time() - t0
     print(f"Corrector training took {corrector_time:.1f}s")
 

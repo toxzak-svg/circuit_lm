@@ -912,39 +912,20 @@ def train_hybrid_streaming(
     circuit_weight: float = 0.5,
     max_examples: int = 50000,
     max_context_len: int = 32,
-    # Larger corrector options:
-    embed_dim: int = 64,
-    hidden_dim: int = 128,
-    num_layers: int = 2,
+    embed_dim: int = 128,
+    hidden_dim: int = 256,
+    num_layers: int = 3,
     use_ssd: bool = True,
+    chunk_size: int = 2000,
 ):
-    """Train the neural corrector.
+    """Train the neural corrector using a streaming data loader.
 
-    The circuit (and its tokenizer/vocab) must already be trained. Use
-    circuit-lm train with --tokenizer bpe --bpe_merges 512 for a larger
-    vocabulary, then run hybrid-train on the same data.
+    Processes data in chunks to avoid loading the entire corpus into memory.
+    Persistent circuit state across chunks (stack/FSM state maintained between batches).
     """
     print(f"Loading circuit from {circuit_path}...")
     circuit, tokenizer = load_model(circuit_path)
-    
-    print(f"Building dataset from {data_path}...")
-    examples = build_dataset(circuit, tokenizer, data_path, max_examples)
-    print(f"Built {len(examples)} training examples")
-    
-    # Count how many CircuitLM got wrong
-    wrong_count = 0
-    for ex in examples:
-        hist = ex.circuit_histogram
-        if hist:
-            pred = max(range(len(hist)), key=lambda i: hist[i])
-            if pred != ex.target_token:
-                wrong_count += 1
-    print(f"CircuitLM accuracy: {100*(len(examples)-wrong_count)/len(examples):.2f}%")
-    
-    # Create dataset and dataloader
-    dataset = HybridDataset(examples, circuit.vocab_size)
-    dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
-    
+
     stack_depth = getattr(circuit, 'stack_depth', 4)
 
     corrector = NeuralCorrector(
@@ -957,66 +938,92 @@ def train_hybrid_streaming(
         num_layers=num_layers,
         use_ssd=use_ssd,
     )
-    
+
     ssd_note = " (SSD)" if use_ssd else " (LSTM)"
     num_params = sum(p.numel() for p in corrector.parameters())
-    print(f"NeuralCorrector{ssd_note}: {num_params:,} parameters")
-    
-    # Training setup
+    print(f"NeuralCorrector{ssd_note}: {num_params:,} parameters (embed={embed_dim}, hidden={hidden_dim}, layers={num_layers})")
+
     optimizer = torch.optim.Adam(corrector.parameters(), lr=lr)
     criterion = nn.CrossEntropyLoss()
-    
+
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(f"Training on {device}")
     corrector.to(device)
     circuit_weight_t = torch.tensor(circuit_weight, dtype=torch.float32).to(device)
-    
-    # Training loop
+
+    total_examples_seen = 0
+    global_wrong = 0
+
     for epoch in range(num_epochs):
-        total_loss = 0
-        total_correct = 0
-        total_count = 0
-        
-        for batch in dataloader:
-            # Move to device
-            batch = {k: v.to(device) for k, v in batch.items()}
-            
-            # Get corrector logits
-            correction_logits = corrector(
-                batch['circuit_state'],
-                batch['stack_top'],
-                batch['context'],
-                batch['circuit_probs'],
-            )
-            
-            # Blend with circuit (in log-space for numerical stability)
-            circuit_logits = torch.log(batch['circuit_probs'] + 1e-8)
-            combined_logits = (
-                circuit_weight_t * circuit_logits + 
-                (1 - circuit_weight_t) * correction_logits
-            )
-            
-            # Train on cross-entropy
-            loss = criterion(combined_logits, batch['target'])
-            
-            optimizer.zero_grad()
-            loss.backward()
-            optimizer.step()
-            
-            total_loss += loss.item()
-            preds = combined_logits.argmax(dim=1)
-            total_correct += (preds == batch['target']).sum().item()
-            total_count += batch['target'].size(0)
-        
-        accuracy = 100 * total_correct / total_count
-        avg_loss = total_loss / len(dataloader)
-        print(f"Epoch {epoch+1}/{num_epochs}: loss={avg_loss:.4f}, accuracy={accuracy:.2f}%")
-    
+        epoch_loss = 0.0
+        epoch_correct = 0
+        epoch_count = 0
+        batches_in_epoch = 0
+
+        # Re-open iterator each epoch (stream through file once per epoch)
+        for chunk in iter_hybrid_examples(
+            circuit, tokenizer, data_path,
+            max_examples=max_examples,
+            max_context_len=max_context_len,
+            chunk_size=chunk_size,
+        ):
+            # Build dataset from this chunk
+            chunk_dataset = HybridDataset(chunk, circuit.vocab_size)
+            chunk_loader = DataLoader(chunk_dataset, batch_size=batch_size, shuffle=True)
+
+            for batch in chunk_loader:
+                batch = {k: v.to(device) for k, v in batch.items()}
+
+                correction_logits = corrector(
+                    batch['circuit_state'],
+                    batch['stack_top'],
+                    batch['context'],
+                    batch['circuit_probs'],
+                )
+
+                circuit_logits = torch.log(batch['circuit_probs'] + 1e-8)
+                combined_logits = (
+                    circuit_weight_t * circuit_logits +
+                    (1 - circuit_weight_t) * correction_logits
+                )
+
+                loss = criterion(combined_logits, batch['target'])
+
+                optimizer.zero_grad()
+                loss.backward()
+                optimizer.step()
+
+                epoch_loss += loss.item()
+                preds = combined_logits.argmax(dim=1)
+                epoch_correct += (preds == batch['target']).sum().item()
+                epoch_count += batch['target'].size(0)
+
+                # Track circuit accuracy on first epoch only (expensive)
+                if epoch == 0:
+                    for j in range(len(chunk)):
+                        hist = chunk[j].circuit_histogram
+                        if hist:
+                            pred = max(range(len(hist)), key=lambda i: hist[i])
+                            if pred != chunk[j].target_token:
+                                global_wrong += 1
+
+            batches_in_epoch += 1
+
+        total_examples_seen += epoch_count
+        accuracy = 100 * epoch_correct / epoch_count if epoch_count > 0 else 0.0
+        avg_loss = epoch_loss / batches_in_epoch if batches_in_epoch > 0 else 0.0
+        print(f"Epoch {epoch+1}/{num_epochs}: loss={avg_loss:.4f}, accuracy={accuracy:.2f}%, examples={epoch_count}")
+
+    # Report circuit baseline accuracy
+    if total_examples_seen > 0:
+        circuit_acc = 100 * (total_examples_seen - global_wrong) / total_examples_seen
+        print(f"Circuit-only baseline accuracy: {circuit_acc:.2f}%")
+
     # Save
     hybrid = HybridModel(circuit, corrector, circuit_weight)
     hybrid.save(output_path)
     print(f"Saved to {output_path}")
-    
+
     return hybrid
 
 
