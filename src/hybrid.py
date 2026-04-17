@@ -1160,6 +1160,40 @@ def train_residual_hybrid(
     return hybrid
 
 
+def train_hybrid(
+    circuit_path: str,
+    data_path: str,
+    output_path: str,
+    num_epochs: int = 3,
+    batch_size: int = 64,
+    lr: float = 1e-3,
+    max_examples: int = 50000,
+    max_context_len: int = 32,
+    embed_dim: int = 64,
+    hidden_dim: int = 128,
+    num_layers: int = 2,
+) -> ResidualHybridModel:
+    """Train a hybrid circuit+neural model.
+    
+    Wrapper around train_residual_hybrid that trains the residual neural
+    corrector on top of the circuit predictions.
+    """
+    return train_residual_hybrid(
+        circuit_path=circuit_path,
+        data_path=data_path,
+        output_path=output_path,
+        num_epochs=num_epochs,
+        batch_size=batch_size,
+        lr=lr,
+        max_examples=max_examples,
+        max_context_len=max_context_len,
+        embed_dim=embed_dim,
+        hidden_dim=hidden_dim,
+        num_layers=num_layers,
+        use_ssd=True,
+    )
+
+
 if __name__ == '__main__':
     import argparse
     
