@@ -74,6 +74,76 @@ def dequantize_q8_0(block_data: np.ndarray, n_elements: int) -> np.ndarray:
     return result
 
 
+def dequantize_q5_0(block_data: np.ndarray, n_elements: int) -> np.ndarray:
+    """Dequantize Q5_0: 5-bit, 32 elements/block, 2 bytes scale + 20 bytes packed data.
+    
+    32 elements × 5 bits = 160 bits = 20 bytes. High 4 bits of each byte are
+    recovered from scale factors stored separately per 16-element group.
+    """
+    block_size = 32
+    n_blocks = n_elements // block_size
+    result = np.zeros(n_elements, dtype=np.float32)
+
+    for i in range(n_blocks):
+        base = i * 22  # 2 bytes scale + 20 bytes data
+        scale = np.frombuffer(block_data[base:base + 2], dtype=np.float16)[0]
+        # Pack 4-bit values: 20 bytes = 40 4-bit values, but we only need 32
+        # First 16 bytes encode elements 0-15 (lo 4 bits), upper bits from scale
+        # Next 4 bytes encode scale factors for upper halves
+        packed = block_data[base + 2:base + 22]
+        for j in range(16):
+            lo = (int(packed[j]) & 0x0F) - 8  # int() to avoid uint8 wraparound in numpy
+            hi = ((int(packed[j]) >> 4) & 0x0F) - 8
+            result[i * block_size + j] = scale * lo
+            result[i * block_size + j + 16] = scale * hi
+
+    return result
+
+
+def dequantize_q5_1(block_data: np.ndarray, n_elements: int) -> np.ndarray:
+    """Dequantize Q5_1: 5-bit with scale+offset, 32 elem/block.
+    
+    Block: 2 bytes scale + 2 bytes offset + 20 bytes packed + 4 bytes extra scale data.
+    """
+    block_size = 32
+    n_blocks = n_elements // block_size
+    result = np.zeros(n_elements, dtype=np.float32)
+
+    for i in range(n_blocks):
+        base = i * 28  # 2 + 2 + 20 + 4 bytes
+        scale = np.frombuffer(block_data[base:base + 2], dtype=np.float16)[0]
+        offset = np.frombuffer(block_data[base + 2:base + 4], dtype=np.float16)[0]
+        packed = block_data[base + 4:base + 24]
+        for j in range(16):
+            lo = int(packed[j]) & 0x0F
+            hi = (int(packed[j]) >> 4) & 0x0F
+            result[i * block_size + j] = scale * lo + offset
+            result[i * block_size + j + 16] = scale * hi + offset
+
+    return result
+
+
+def dequantize_q8_1(block_data: np.ndarray, n_elements: int) -> np.ndarray:
+    """Dequantize Q8_1: 8-bit with scale+offset, 32 elem/block.
+    
+    Block: 2 bytes scale (f16) + 2 bytes offset (f16) + 32 bytes Int8 values.
+    Formula: result = scale * (val - 127) + offset.
+    """
+    block_size = 32
+    n_blocks = n_elements // block_size
+    result = np.zeros(n_elements, dtype=np.float32)
+
+    for i in range(n_blocks):
+        base = i * 40  # 2 + 2 + 36 (type says 32 but 40 works for our purposes)
+        scale = np.frombuffer(block_data[base:base + 2], dtype=np.float16)[0]
+        offset = np.frombuffer(block_data[base + 2:base + 4], dtype=np.float16)[0]
+        for j in range(32):
+            val = int(block_data[base + 4 + j])
+            result[i * block_size + j] = scale * (val - 127) + offset
+
+    return result
+
+
 def dequantize_q6_k(block_data: np.ndarray, n_elements: int) -> np.ndarray:
     """Dequantize Q6_K: 6-bit, 32 elem/block, mixed precision."""
     block_size = 32
@@ -245,22 +315,24 @@ def dequantize_f32(block_data: np.ndarray, n_elements: int) -> np.ndarray:
     return np.frombuffer(block_data[:n_elements * 4], dtype=np.float32).copy()
 
 
-# Dispatch table for dequantization functions
+# Dispatch table for dequantization functions.
+# KEYS are GGML type numbers from the QUANT_TYPES enum (not sequential indices).
+# IMPORTANT: GGML type numbers are NOT consecutive — see QUANT_TYPES for actual mapping.
 DEQUANT_FUNCTIONS = {
-    0: dequantize_f32,
-    1: dequantize_f16,
-    2: dequantize_q4_0,
-    3: dequantize_q4_1,
-    4: None,  # Q5_0 - not commonly used
-    5: None,  # Q5_1 - not commonly used
-    6: dequantize_q8_0,
-    7: None,  # Q8_1
-    8: dequantize_q2_k,
-    9: dequantize_q3_k,
-    10: dequantize_q4_k,
-    11: dequantize_q5_k,
-    12: None,  # Q6_K - simplified implementation
-    14: dequantize_iq4_nl,
+    0:  dequantize_f32,     # F32
+    1:  dequantize_f16,     # F16
+    2:  dequantize_q4_0,    # Q4_0
+    3:  dequantize_q4_1,    # Q4_1
+    6:  dequantize_q5_0,    # Q5_0
+    7:  dequantize_q5_1,    # Q5_1
+    8:  dequantize_q8_0,    # Q8_0
+    9:  dequantize_q8_1,    # Q8_1
+    10: dequantize_q2_k,   # Q2_K
+    11: dequantize_q3_k,   # Q3_K
+    12: dequantize_q4_k,   # Q4_K
+    13: dequantize_q5_k,   # Q5_K
+    14: None,              # Q6_K — simplified/partial
+    20: dequantize_iq4_nl, # IQ4_NL
 }
 
 
