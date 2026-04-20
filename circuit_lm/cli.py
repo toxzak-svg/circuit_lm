@@ -645,6 +645,10 @@ def build_parser() -> argparse.ArgumentParser:
         "--paragraph", action="store_true",
         help="Allow multi-sentence replies (stop at double newline).",
     )
+    p_chat.add_argument(
+        "--system", default=None, metavar="TEXT",
+        help="System preamble for conversationalist behavior (default: brief helpful assistant). Use '' to disable.",
+    )
     p_chat.set_defaults(func=cmd_chat)
 
     return parser
