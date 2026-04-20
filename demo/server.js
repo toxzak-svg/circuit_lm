@@ -52,10 +52,11 @@ app.post('/api/query', async (req, res) => {
  */
 async function runCircuitLM(repoRoot, userInput) {
   const prompt = `User: ${userInput}\nAssistant: `;
+  const pythonCmd = process.platform === 'win32' ? 'python' : 'python3';
 
   // Try to run CircuitLM trace
   const modelPath = join(repoRoot, 'models/infra_circuit.json');
-  const traceResult = await runCommand('python3', [
+  const traceResult = await runCommand(pythonCmd, [
     '-m', 'circuit_lm.cli',
     'trace',
     '--prompt', prompt,
@@ -74,7 +75,7 @@ async function runCircuitLM(repoRoot, userInput) {
   // Tokenize input
   let tokens = [];
   try {
-    const tokResult = await runCommand('python3', [
+    const tokResult = await runCommand(pythonCmd, [
       '-m', 'circuit_lm.cli',
       'tokenize', userInput
     ], repoRoot);
@@ -101,7 +102,7 @@ async function runCircuitLM(repoRoot, userInput) {
 function runCommand(cmd, args, cwd) {
   return new Promise((resolve, reject) => {
     const env = { ...process.env, PYTHONPATH: cwd };
-    const proc = spawn(cmd, args, { cwd, env, timeout: 30000 });
+    const proc = spawn(cmd, args, { cwd, env, timeout: 30000, shell: true });
     let stdout = '', stderr = '';
     proc.stdout.on('data', d => stdout += d);
     proc.stderr.on('data', d => stderr += d);
