@@ -1,7 +1,7 @@
 # Dual-Channel CircuitLM Architecture Spec
 
-**Status:** Prototype-ready  
-**Date:** 2026-04-15  
+**Status:** Updated 2026-04-26
+**Date:** 2026-04-15
 **Goal:** 3M–10M parameter hybrid that beats plain tiny decoders at the same budget
 
 ---
@@ -10,9 +10,9 @@
 
 A dual-channel language model where:
 
-1. **Symbolic channel** (PDA circuit) — discrete, integer-only state machine that tracks entities, relations, intent slots, and conversation state. Zero floats. Inferred via CP-SAT.
-2. **Text channel** (neural corrector) — small GRU/MLM that handles distributional fluency and surface phrasing.
-3. **Learned stitcher** (fusion gate) — learns when to trust symbols vs text at every token position.
+1. **Symbolic channel** (PDA/FSM circuit) — discrete, integer-only state machine that tracks structural patterns. Zero floats. Inferred via CP-SAT.
+2. **Neural corrector** — small MLP with SSD context encoder that handles distributional fluency and surface phrasing.
+3. **Gated delta fusion** — learns per-state gate controlling how much the corrector delta modifies the circuit histogram.
 
 The key claim: same parameter budget, better groundedness and controllability than a plain tiny LM.
 
@@ -25,38 +25,88 @@ Input: token stream
   │
   ├──► SYMBOLIC CHANNEL ──────────────────────────────────────
   │       │
-  │       ├── PDA circuit (integer-only, CP-SAT trained)
-  │       │   • Stack operations (push/pop/noop)
-  │       │   • Tracks: entities, relations, intent slots, memory keys
-  │       │   • Emits: circuit_state vector (one-hot, S dimensions)
-  │       │   • Emits: confidence histogram over vocab
+  │       ├── PDA/FSM circuit (integer-only, CP-SAT trained)
+  │       │   • Tracks structural patterns in token sequences
+  │       │   • Emits: circuit_state, stack_top, histogram over vocab
   │       │
-  │       └── Symbol embeddings: Linear(S → symbol_embed_dim)
+  │       └── State embeddings: Embed(state, embed_dim)
+  │           Stack embeddings: Embed(stack_top, embed_dim)
+  │           Histogram projection: Linear(vocab_size, embed_dim)
   │
-  ├──► TEXT CHANNEL ──────────────────────────────────────────
+  ├──► NEURAL CORRECTOR ──────────────────────────────────────
   │       │
-  │       ├── GRU encoder (char or BPE tokens)
-  │       │   • 1-2 layers, hidden_dim 128-256
-  │       │   • Input: recent context window (32-64 tokens)
-  │       │   • Output: text_hidden_dim
+  │       ├── StackedSSDContext (2-3 layers)
+  │       │   • SSD: h_{t+1} = A @ h_t + B @ x_t (no gates)
+  │       │   • Orthogonal init scaled by 1/sqrt(embed_dim)
+  │       │   • Sequential: each layer's final h → next layer's initial
   │       │
-  │       └── Neural corrector: MLP(circuit_state + text_hidden + context)
-  │           • Predicts residual on top of circuit distribution
-  │           • Output: logits over vocab
+  │       └── 2-layer MLP with gated delta output
+  │           ├── LayerNorm on each input (state, stack, context, histogram)
+  │           ├── combined = concat(state_emb, stack_emb, context_enc, hist_emb)
+  │           ├── h1 = SiLU(W1 @ combined_norm); h1 = h1 + LayerNorm(h1)
+  │           ├── h2 = SiLU(W2 @ h1); h2 = h2 + LayerNorm(h2)
+  │           ├── delta = W_delta @ h2  (vocab_size logits)
+  │           └── gate = sigmoid(gate_param[state])  (per-state scalar)
   │
-  └──────► FUSION GATE ────────────────────────────────────────
+  └──────► GATED DELTA FUSION ────────────────────────────────
               │
-              ├── gate = sigmoid(Linear(circuit_state + text_hidden))
-              │   • gate ∈ [0,1] per token
+              ├── final_logits = circuit_histogram + gate * delta
+              │   • gate ∈ (0,1) per state, init near 0 (sigmoid ≈ 0.5)
+              │   • Circuit histogram is strong prior — gate controls override
               │
-              ├── circuit_logits = Linear(circuit_state_proj)
-              ├── neural_logits = Linear(text_hidden_proj)
-              │
-              └── final_logits = gate * circuit_logits + (1 - gate) * neural_logits
-                  • Alternately: weighted sum with learned per-class weights
+              └── CrossEntropyLoss on final_logits
 
 Output: next token distribution (over vocab)
 ```
+
+---
+
+## Corrector Architecture Details
+
+### Input Encoding
+
+Each input is separately projected and LayerNormed before concatenation:
+
+| Input | Shape | Projection |
+|-------|-------|------------|
+| circuit_state | (batch,) | Embed(num_states=4096, 256) |
+| stack_top | (batch,) | Embed(stack_depth=5, 256) |
+| context | (batch, max_ctx=32) | TokenEmbed → StackedSSD → 256 |
+| histogram | (batch, vocab) | Linear(vocab, 256) |
+
+Combined input: 4 × 256 = 1024 dimensions.
+
+### Stacked SSD Context Encoder
+
+SSD recurrence (no gates, two learnable matrices A and B):
+```
+h_{t+1} = A @ h_t + B @ token_embed(t)
+h = h / (norm(h) + 1e-8)  # normalize for stability
+```
+
+Each layer independently processes the full sequence, with orthogonal initialization scaled by `1/sqrt(embed_dim)`. Multiple layers are applied sequentially — each layer's final hidden state becomes the initial state for the next layer.
+
+### MLP with Residuals
+
+```python
+# Layer 1: 1024 → 512 with SiLU + residual + LayerNorm
+h1 = SiLU(W1 @ combined) + LayerNorm(SiLU(W1 @ combined))
+
+# Layer 2: 512 → 512 with SiLU + residual + LayerNorm
+h2 = SiLU(W2 @ h1) + LayerNorm(SiLU(W2 @ h1))
+
+# Delta output: 512 → vocab_size
+delta = W_delta @ h2
+```
+
+### Gated Delta
+
+```python
+gate = sigmoid(gate_param[state])  # one scalar per state, init ~0
+final_logits = circuit_histogram + gate * delta
+```
+
+Gate initialization near 0 (σ ≈ 0.5) ensures both circuit and corrector contribute equally at start. The circuit histogram is a strong prior — the gate learns how much the corrector should override it per-state.
 
 ---
 
@@ -130,37 +180,38 @@ OUTPUT: text_hidden vector per position
 
 ## Losses
 
-### 1. Standard NLL Loss
+### 1. Standard Cross-Entropy Loss on Gated Delta
 ```
-L_nll = -log p(token | circuit_state, text_hidden, gate)
+final_logits = circuit_histogram + gate * delta
+L_ce = CrossEntropyLoss(final_logits, target_token)
 ```
 
-### 2. Circuit Confidence Loss (novel)
-When circuit is confident but wrong → penalize the gate for trusting it:
-```
-L_circuit_mismatch = |circuit_confidence - circuit_accuracy| * gate_weight
-```
-This teaches the gate to learn when the circuit is reliable without manual rules.
+The gate is part of the computational graph — gradients flow through `gate_param[state]` and `delta` to all corrector weights.
 
-### 3. Symbol Consistency Loss (novel)
-When symbolic state contradicts text → penalize fluent-but-wrong:
+### 2. Backprop Path
 ```
-L_consistency = max(0, text_score(wrong_symbolic) - text_score(correct_symbolic))
+target ← CrossEntropyLoss ← final_logits = circuit_hist + gate * delta
+                                              ↑
+                              delta ← W_delta ← MLP layers
+                                              ↑
+                              combined ← [state_emb, stack_emb, context_enc, hist_emb]
+                                              ↑
+                              StackedSSDContext ← token_embed ← context
 ```
-Requires a symbolic ground-truth signal during training (extracted via rule-based parser).
 
-### 4. Total Loss
-```
-L_total = L_nll + λ1 * L_circuit_mismatch + λ2 * L_consistency
-λ1 = 0.1 (circuit mismatch weight)
-λ2 = 0.2 (consistency weight)
-```
+Backprop flows through: `ssd.forward()` → hidden_proj (W1, W2) → delta_proj (W_delta) → gate.
+
+### 3. Gate Learning
+Gate is a learned scalar per state (`gate_param[state]`), initialized near 0 so sigmoid ≈ 0.5:
+- Gradient pushes gate higher when corrector delta is helpful
+- Gradient pushes gate lower when delta hurts accuracy
+- Circuit histogram is a strong prior — gate learns per-state how much to let corrector override
 
 ---
 
 ## Training Loop
 
-### Phase 1: Pretrain PDA Circuit (CP-SAT, integer-only)
+### Phase 1: Train PDA/FSM Circuit (CP-SAT, integer-only)
 ```
 Input: token sequences
 Output: circuit.json (states, transitions, emission histograms)
@@ -172,28 +223,49 @@ Method: OR-Tools CP-SAT over:
 Objective: maximize next-token accuracy on training data
 ```
 
-### Phase 2: Warm Text Channel (MLM pretraining)
+### Phase 2: Train CorrectedCorrector (neural, full backprop)
 ```
 Fix circuit.json
-Train GRU + corrector only (no fusion gate yet)
-Objective: predict next token given circuit state + text context
-L_warm = -log p(token | circuit_state, text_hidden)
+Train corrector on: circuit_state + stack_top + context + circuit_histogram → next_token
+Loss: CrossEntropyLoss(circuit_histogram + gate * delta, target)
+Backprop: ssd → hidden_proj → delta_proj → gate
+Optimizer: Adam, lr=1e-3, batch=64
 ```
 
-### Phase 3: Train Fusion Gate (full end-to-end)
+### Phase 3: Finetune on Personal Data
 ```
-Unfreeze everything
-Train with L_total (NLL + circuit mismatch + consistency)
-Optimizer: AdamW, lr=2e-4, cosine schedule
-Batch: 32-64, gradient_accumulation=4
+Use personal conversations
+Narrow domain: personal AI assistant style/personality/memory patterns
+Target: improve accuracy on personal data distribution
 ```
 
-### Phase 4: Finetune on Personal Data
-```
-Use Zach's Starfire conversations (1,758 examples)
-Narrow domain: personal AI assistant
-Target: learn personality + preferences + memory patterns
-```
+---
+
+## Parameter Budgets
+
+### Tiny (2-3M params)
+
+| Component | Params | Config |
+|-----------|--------|--------|
+| PDA Circuit | 0 (integer) | 16 states, stack_depth=2 |
+| CorrectedCorrector | ~2M | embed_dim=256, hidden_dim=512, 2 MLP layers |
+| **Total** | **~2M** | |
+
+### Small (5M params)
+
+| Component | Params | Config |
+|-----------|--------|--------|
+| PDA/FSM Circuit | 0 (integer) | 32 states, stack_depth=3 |
+| CorrectedCorrector | ~4M | embed_dim=256, hidden_dim=512, 2 layers, 2 SSD |
+| **Total** | **~4M** | |
+
+### Medium (10M params)
+
+| Component | Params | Config |
+|-----------|--------|--------|
+| PDA/FSM Circuit | 0 (integer) | 64 states, stack_depth=4 |
+| CorrectedCorrector | ~8M | embed_dim=256, hidden_dim=512, 3 MLP layers, 3 SSD |
+| **Total** | **~8M** | |
 
 ---
 
@@ -245,16 +317,18 @@ This spec adds:
 
 ## First Experiment Checklist
 
-- [ ] Define vocabulary (BPE 512-1024 for personal data)
-- [ ] Build text encoder (GRU, ~400K params)
-- [ ] Build fusion gate MLP
-- [ ] Write L_circuit_mismatch loss
-- [ ] Write L_consistency loss (needs slot tracking annotation)
-- [ ] Phase 1: train PDA circuit
-- [ ] Phase 2: warm corrector (fix circuit)
-- [ ] Phase 3: train full system
-- [ ] Evaluate on held-out Starfire conversations
-- [ ] Compare gate distribution vs fixed 0.5 blend
+- [x] Build CorrectedCorrector with gated delta architecture (src/hybrid.py)
+- [x] Build StackedSSDContext (2-3 layers with orthogonal init)
+- [x] Add LayerNorm to each input encoding (state, stack, context, histogram)
+- [x] Implement 2-layer MLP with SiLU + residual + LayerNorm
+- [x] Implement train_corrected_hybrid() with CrossEntropyLoss on final_logits
+- [x] Verify backprop through ssd → hidden_proj → delta_proj → gate
+- [ ] Test on small corpus (verify loss converges)
+- [ ] Evaluate accuracy improvement over circuit-only baseline
+- [ ] Compare gated delta vs fixed blend (0.5 weight)
+- [ ] Experiment with num_ssd_layers (2 vs 3)
+- [ ] Experiment with embed_dim (256 vs 512)
+- [ ] Finetune on personal data
 
 ---
 

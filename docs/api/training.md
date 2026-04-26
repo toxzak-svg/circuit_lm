@@ -193,3 +193,88 @@ model = train(
     refinement_rounds=1,
 )
 ```
+
+## Hybrid Corrector Training
+
+### `hybrid.train_corrected_hybrid`
+
+Train a `CorrectedCorrector` — the gated delta corrector with stacked SSD context encoding.
+
+```python
+from src.hybrid import train_corrected_hybrid
+```
+
+```python
+def train_corrected_hybrid(
+    circuit_path: str,
+    data_path: str,
+    output_path: str,
+    num_epochs: int = 3,
+    batch_size: int = 64,
+    lr: float = 1e-3,
+    max_examples: int = 50000,
+    max_context_len: int = 32,
+    embed_dim: int = 256,
+    hidden_dim: int = 512,
+    num_ssd_layers: int = 2,
+) -> CorrectedHybridModel
+```
+
+**Parameters:**
+- `circuit_path` (str): Path to trained circuit .json
+- `data_path` (str): Path to training data .txt
+- `output_path` (str): Output path for corrector checkpoint
+- `num_epochs` (int): Training epochs (default: 3)
+- `batch_size` (int): Batch size (default: 64)
+- `lr` (float): Learning rate (default: 1e-3)
+- `max_examples` (int): Max training examples (default: 50000)
+- `max_context_len` (int): Context window length (default: 32)
+- `embed_dim` (int): Embedding dim (default: 256)
+- `hidden_dim` (int): Hidden dim for MLP (default: 512)
+- `num_ssd_layers` (int): Number of stacked SSD layers (default: 2)
+
+**Returns:**
+- `CorrectedHybridModel`: Trained hybrid model with `circuit` and `corrector`
+
+**Loss:** Cross-entropy on `final_logits = circuit_histogram + gate * delta`
+
+**Backprop path:** `ssd.forward()` → hidden_proj (W1, W2) → delta_proj (W_delta) → gate
+
+### Usage Example
+
+```python
+from src.hybrid import train_corrected_hybrid, CorrectedHybridModel
+from circuit_lm.io import load_model
+
+# Train corrector on top of existing circuit
+hybrid = train_corrected_hybrid(
+    circuit_path="circuit.json",
+    data_path="training_data.txt",
+    output_path="corrector.pt",
+    num_epochs=3,
+    batch_size=64,
+    embed_dim=256,
+    hidden_dim=512,
+    num_ssd_layers=2,
+)
+
+# Use the hybrid model for prediction
+token, info = hybrid.predict([1, 2, 3, 4, 5])
+print(f"Predicted: {token}, info: {info}")
+
+# Save/load
+hybrid.save("hybrid_model.pt")
+# Later:
+hybrid, tokenizer = CorrectedHybridModel.load("circuit.json", "corrector.pt")
+```
+
+### Architecture Details
+
+The `CorrectedCorrector` uses:
+
+1. **Separate LayerNorm per input** — state, stack, context, and histogram each get their own LayerNorm before concatenation
+2. **StackedSSDContext** — 2-3 SSD layers applied sequentially, each with orthogonal initialization scaled by `1/sqrt(embed_dim)`
+3. **2-layer MLP with residuals** — `combined → 512 → 512`, each layer: `SiLU(Wx + b) + LayerNorm(SiLU(Wx + b))`
+4. **Gated delta** — `final_logits = circuit_histogram + sigmoid(gate_param[state]) * delta`
+
+See `docs/DUAL_CHANNEL_CIRCUIT_LM.md` for full architecture specification.

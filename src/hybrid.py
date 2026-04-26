@@ -534,6 +534,222 @@ class ResidualHybridModel:
         return cls(circuit, corrector), tokenizer
 
 
+class StackedSSDContext(nn.Module):
+    """Stacked SSD layers for deeper context encoding.
+    
+    Each SSD layer: h_{t+1} = A @ h_t + B @ x_t (no gates)
+    With orthogonal initialization scaled by 1/sqrt(embed_dim).
+    """
+    
+    def __init__(self, embed_dim: int, num_layers: int = 2):
+        super().__init__()
+        self.embed_dim = embed_dim
+        self.num_layers = num_layers
+        
+        self.layers = nn.ModuleList([
+            SSDContext(embed_dim) for _ in range(num_layers)
+        ])
+    
+class StackedSSDContext(nn.Module):
+    """Stacked SSD layers for deeper context encoding.
+    
+    Each SSD layer processes the full sequence independently, producing a context vector.
+    Outputs from all layers are concatenated for richer representation.
+    """
+    
+    def __init__(self, embed_dim: int, num_layers: int = 2):
+        super().__init__()
+        self.embed_dim = embed_dim
+        self.num_layers = num_layers
+        
+        self.layers = nn.ModuleList([
+            SSDContext(embed_dim) for _ in range(num_layers)
+        ])
+    
+class StackedSSDContext(nn.Module):
+    """Stacked SSD layers for deeper context encoding.
+    
+    Each SSD layer: h_{t+1} = A @ h_t + B @ x_t (no gates)
+    Layers are applied sequentially - each layer's final hidden state
+    becomes the initial state for the next layer.
+    With orthogonal init scaled by 1/sqrt(embed_dim).
+    """
+    
+    def __init__(self, embed_dim: int, num_layers: int = 2):
+        super().__init__()
+        self.embed_dim = embed_dim
+        self.num_layers = num_layers
+        
+        self.layers = nn.ModuleList([
+            SSDContext(embed_dim) for _ in range(num_layers)
+        ])
+    
+    def forward(self, token_embeddings: torch.Tensor) -> torch.Tensor:
+        """Process sequence through stacked SSD layers sequentially.
+        
+        Args:
+            token_embeddings: (batch, seq_len, embed_dim)
+        
+        Returns:
+            (batch, embed_dim) — final hidden state from last layer
+        """
+        batch, seq_len, _ = token_embeddings.shape
+        
+        for layer in self.layers:
+            h = layer.h0.unsqueeze(0).expand(batch, -1)
+            for t in range(seq_len):
+                h = torch.matmul(h, layer.A.t()) + torch.matmul(token_embeddings[:, t], layer.B.t())
+                h = h / (h.norm(dim=-1, keepdim=True) + 1e-8)
+            final_h = torch.matmul(h, layer.C.t())
+        
+        return final_h
+
+
+class CorrectedCorrector(nn.Module):
+    """Improved corrector with proper input encoding, stacked SSD, and gated delta.
+    
+    Architecture:
+      1. Each input (state, stack, context, histogram) is separately projected + LayerNormed
+      2. Stacked SSD context encoder (2-3 layers with orthogonal init)
+      3. 2-layer MLP with residual connections and SiLU activation
+      4. Learned gate per state controlling delta magnitude
+    
+    The gate mechanism: final_logits = circuit_histogram + gate * delta
+    where gate = sigmoid(gate_param[state]) is a learned scalar per state.
+    """
+    
+    def __init__(
+        self,
+        vocab_size: int,
+        num_states: int = 4096,
+        stack_depth: int = 4,
+        max_context_len: int = 32,
+        embed_dim: int = 256,
+        hidden_dim: int = 512,
+        num_ssd_layers: int = 2,
+    ):
+        super().__init__()
+        self.vocab_size = vocab_size
+        self.num_states = num_states
+        self.stack_depth = stack_depth
+        self.max_context_len = max_context_len
+        self.embed_dim = embed_dim
+        self.hidden_dim = hidden_dim
+        
+        # Input embeddings (each separately projected + normed)
+        self.state_embed = nn.Embedding(num_states + 1, embed_dim)  # +1 for padding
+        self.stack_embed = nn.Embedding(stack_depth + 1, embed_dim)
+        self.token_embed = nn.Embedding(vocab_size, embed_dim)
+        self.histogram_proj = nn.Linear(vocab_size, embed_dim)
+        
+        # Individual LayerNorms for each input
+        self.state_ln = nn.LayerNorm(embed_dim)
+        self.stack_ln = nn.LayerNorm(embed_dim)
+        self.context_ln = nn.LayerNorm(embed_dim)
+        self.hist_ln = nn.LayerNorm(embed_dim)
+        
+        # Stacked SSD context encoder
+        self.context_layer = StackedSSDContext(embed_dim, num_layers=num_ssd_layers)
+        
+        # Combined input dimension: state + stack + context + histogram
+        combined_dim = embed_dim * 4
+        
+        # Layer 1: combined → hidden
+        self.W1 = nn.Linear(combined_dim, hidden_dim)
+        self.b1 = nn.Parameter(torch.zeros(hidden_dim))
+        self.ln1 = nn.LayerNorm(hidden_dim)
+        
+        # Layer 2: hidden → hidden
+        self.W2 = nn.Linear(hidden_dim, hidden_dim)
+        self.b2 = nn.Parameter(torch.zeros(hidden_dim))
+        self.ln2 = nn.LayerNorm(hidden_dim)
+        
+        # Delta output projection
+        self.W_delta = nn.Linear(hidden_dim, vocab_size)
+        self.b_delta = nn.Parameter(torch.zeros(vocab_size))
+        
+        # Gate parameter per state (learned scalar per state)
+        self.gate_param = nn.Parameter(torch.zeros(num_states))
+    
+    def _init_weights(self):
+        """Initialize weights with orthogonal init scaled by 1/sqrt(embed_dim)."""
+        scale = 1.0 / (self.embed_dim ** 0.5)
+
+        # Orthogonal init for SSD A, B matrices
+        for layer in self.context_layer.layers:
+            nn.init.orthogonal_(layer.A, gain=scale)
+            nn.init.orthogonal_(layer.B, gain=scale)
+            nn.init.orthogonal_(layer.C, gain=scale)
+
+        # Linear weights with proper scaling
+        nn.init.kaiming_normal_(self.W1.weight, nonlinearity='relu')
+        nn.init.kaiming_normal_(self.W2.weight, nonlinearity='relu')
+        nn.init.kaiming_normal_(self.W_delta.weight, nonlinearity='relu')
+
+        # Gate init near 0 (sigmoid ~0.5)
+        nn.init.normal_(self.gate_param, mean=0.0, std=0.01)
+    
+    def forward(
+        self,
+        circuit_state: torch.Tensor,
+        stack_top: torch.Tensor,
+        context: torch.Tensor,
+        circuit_probs: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Forward pass computing gated delta.
+        
+        Args:
+            circuit_state: (batch,) - current FSM state
+            stack_top: (batch,) - current stack top
+            context: (batch, max_context_len) - previous tokens
+            circuit_probs: (batch, vocab_size) - CircuitLM prediction probs
+        
+        Returns:
+            (delta, gate) where:
+              delta: (batch, vocab_size) - delta logits to add to circuit
+              gate: (batch,) - gating scalar per example
+        """
+        batch_size = circuit_state.size(0)
+        
+        # Stack top handling
+        stack_idx = torch.clamp(stack_top + 1, min=0, max=self.stack_depth)
+        
+        # Embed and LayerNorm each input
+        state_emb = self.state_ln(self.state_embed(circuit_state))
+        stack_emb = self.stack_ln(self.stack_embed(stack_idx))
+        
+        # Token context through SSD
+        token_emb = self.token_embed(context)
+        context_enc = self.context_ln(self.context_layer(token_emb))
+        
+        # Histogram projection + norm
+        hist_emb = self.hist_ln(self.histogram_proj(circuit_probs))
+        
+        # Combine all normed embeddings
+        combined = torch.cat([
+            state_emb,
+            stack_emb,
+            context_enc,
+            hist_emb,
+        ], dim=1)
+        
+        # Layer 1: SiLU activation with residual
+        h1 = F.silu(self.W1(combined))
+        h1 = h1 + self.ln1(h1)  # residual connection + norm
+
+        # Layer 2: SiLU activation with residual
+        h2 = F.silu(self.W2(h1))
+        h2 = h2 + self.ln2(h2)  # residual connection + norm
+
+        # Delta output
+        delta = self.W_delta(h2)
+        
+        # Gate per state (using state indices)
+        gate = torch.sigmoid(self.gate_param[circuit_state])  # (batch,)
+        
+        return delta, gate
+
+
 class HybridModel:
     """Hybrid: CircuitLM + Neural Corrector."""
 
@@ -592,31 +808,27 @@ class HybridModel:
         context_padded = context_padded + [0] * (self.corrector.max_context_len - len(context_padded))
         
         with torch.no_grad():
-            correction_logits = self.corrector(
+            delta, gate = self.corrector(
                 circuit_state=torch.tensor([state], dtype=torch.long).to(device),
                 stack_top=torch.tensor([stack_top], dtype=torch.long).to(device),
                 context=torch.tensor([context_padded], dtype=torch.long).to(device),
                 circuit_probs=circuit_probs,
             )
 
-        # Blend circuit probs + corrector logits
-        circuit_probs = circuit_probs.squeeze(0)
-        circuit_logits = torch.log(circuit_probs + 1e-8)
-        
-        combined_logits = (
-            self.circuit_weight * circuit_logits + 
-            self.corrector_weight * correction_logits.squeeze(0)
-        )
+        # Gated delta: final = circuit_histogram + gate * delta
+        circuit_hist_tensor = circuit_probs.squeeze(0)
+        final_logits = circuit_hist_tensor + gate.squeeze(0) * delta.squeeze(0)
 
         # Argmax
-        predicted_token = combined_logits.argmax().item()
+        predicted_token = final_logits.argmax().item()
 
         info = {
             'circuit_state': state,
             'stack_top': stack_top,
             'circuit_histogram': circuit_hist,
-            'correction_logits': correction_logits.cpu().numpy().tolist(),
-            'combined_logits': combined_logits.cpu().numpy().tolist(),
+            'delta': delta.cpu().numpy().tolist(),
+            'gate': gate.cpu().numpy().tolist(),
+            'final_logits': final_logits.cpu().numpy().tolist(),
         }
 
         return predicted_token, info
@@ -1192,6 +1404,253 @@ def train_hybrid(
         num_layers=num_layers,
         use_ssd=True,
     )
+
+
+def train_corrected_hybrid(
+    circuit_path: str,
+    data_path: str,
+    output_path: str,
+    num_epochs: int = 3,
+    batch_size: int = 64,
+    lr: float = 1e-3,
+    max_examples: int = 50000,
+    max_context_len: int = 32,
+    embed_dim: int = 256,
+    hidden_dim: int = 512,
+    num_ssd_layers: int = 2,
+) -> 'CorrectedHybridModel':
+    """Train the corrected corrector with gated delta and proper input encoding.
+    
+    Cross-entropy loss on: circuit_histogram + gate * delta
+    
+    Args:
+        circuit_path: Path to trained circuit .json
+        data_path: Path to training data .txt
+        output_path: Path to save corrector checkpoint
+        num_epochs: Training epochs
+        batch_size: Batch size
+        lr: Learning rate
+        max_examples: Max training examples to use
+        max_context_len: Context window length
+        embed_dim: Embedding dimension (default 256)
+        hidden_dim: Hidden dimension (default 512)
+        num_ssd_layers: Number of stacked SSD layers (default 2)
+    
+    Returns:
+        CorrectedHybridModel with trained corrector
+    """
+    print(f"Loading circuit from {circuit_path}...")
+    circuit, tokenizer = load_model(circuit_path)
+    
+    print(f"Building dataset from {data_path}...")
+    examples = build_dataset(circuit, tokenizer, data_path, max_examples)
+    print(f"Built {len(examples)} training examples")
+    
+    wrong_count = 0
+    for ex in examples:
+        hist = ex.circuit_histogram
+        if hist:
+            pred = max(range(len(hist)), key=lambda i: hist[i])
+            if pred != ex.target_token:
+                wrong_count += 1
+    print(f"CircuitLM accuracy: {100*(len(examples)-wrong_count)/len(examples):.2f}%")
+    
+    class CorrectedDataset(Dataset):
+        def __init__(self, examples, vocab_size, max_context_len):
+            self.examples = examples
+            self.vocab_size = vocab_size
+            self.max_context_len = max_context_len
+        
+        def __len__(self):
+            return len(self.examples)
+        
+        def __getitem__(self, idx):
+            ex = self.examples[idx]
+            context = ex.context_ids[-self.max_context_len:] if ex.context_ids else []
+            context = context + [0] * (self.max_context_len - len(context))
+            
+            hist_sum = sum(ex.circuit_histogram) if ex.circuit_histogram else 1
+            circuit_probs = [h / hist_sum for h in ex.circuit_histogram]
+            circuit_probs = circuit_probs + [0.0] * (self.vocab_size - len(circuit_probs))
+            
+            return {
+                'circuit_state': torch.tensor(ex.circuit_state, dtype=torch.long),
+                'stack_top': torch.tensor(ex.stack_top, dtype=torch.long),
+                'context': torch.tensor(context, dtype=torch.long),
+                'circuit_probs': torch.tensor(circuit_probs, dtype=torch.float32),
+                'target': torch.tensor(ex.target_token, dtype=torch.long),
+            }
+    
+    dataset = CorrectedDataset(examples, circuit.vocab_size, max_context_len)
+    dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
+    
+    stack_depth = getattr(circuit, 'stack_depth', 4)
+    
+    corrector = CorrectedCorrector(
+        vocab_size=circuit.vocab_size,
+        num_states=circuit.num_states,
+        stack_depth=stack_depth,
+        max_context_len=max_context_len,
+        embed_dim=embed_dim,
+        hidden_dim=hidden_dim,
+        num_ssd_layers=num_ssd_layers,
+    )
+    corrector._init_weights()
+    
+    num_params = sum(p.numel() for p in corrector.parameters())
+    print(f"CorrectedCorrector: {num_params:,} parameters (embed={embed_dim}, hidden={hidden_dim})")
+    
+    optimizer = torch.optim.Adam(corrector.parameters(), lr=lr)
+    criterion = nn.CrossEntropyLoss()
+    
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    print(f"Training on {device}")
+    corrector.to(device)
+    
+    for epoch in range(num_epochs):
+        total_loss = 0
+        total_correct = 0
+        total_count = 0
+        
+        for batch in dataloader:
+            batch = {k: v.to(device) for k, v in batch.items()}
+            
+            delta, gate = corrector(
+                batch['circuit_state'],
+                batch['stack_top'],
+                batch['context'],
+                batch['circuit_probs'],
+            )
+            
+            circuit_hist = batch['circuit_probs']
+            final_logits = circuit_hist + gate.unsqueeze(1) * delta
+            
+            loss = criterion(final_logits, batch['target'])
+            
+            optimizer.zero_grad()
+            loss.backward()
+            optimizer.step()
+            
+            total_loss += loss.item()
+            preds = final_logits.argmax(dim=1)
+            total_correct += (preds == batch['target']).sum().item()
+            total_count += batch['target'].size(0)
+        
+        accuracy = 100 * total_correct / total_count
+        avg_loss = total_loss / len(dataloader)
+        print(f"Epoch {epoch+1}/{num_epochs}: loss={avg_loss:.4f}, accuracy={accuracy:.2f}%")
+    
+    hybrid = CorrectedHybridModel(circuit, corrector)
+    hybrid.save(output_path)
+    print(f"Saved to {output_path}")
+    
+    return hybrid
+
+
+class CorrectedHybridModel:
+    """Hybrid model using the corrected (gated delta) corrector."""
+    
+    def __init__(
+        self,
+        circuit: CircuitLM | PDACircuitLM,
+        corrector: CorrectedCorrector,
+    ):
+        self.circuit = circuit
+        self.corrector = corrector
+    
+    def predict(
+        self,
+        context_ids: list[int],
+    ) -> tuple[int, dict]:
+        """Predict using gated delta correction."""
+        device = next(self.corrector.parameters()).device
+        
+        if isinstance(self.circuit, PDACircuitLM):
+            state = 0
+            stack = []
+            for tok in context_ids:
+                state, stack = self.circuit.step(state, stack, tok)
+            
+            circuit_hist = self.circuit.config_histogram(state, stack)
+            stack_top = stack[-1] if stack else -1
+        else:
+            state = 0
+            for tok in context_ids:
+                state = self.circuit.next_state(state, tok)
+            
+            circuit_hist = self.circuit.state_histogram(state)
+            stack_top = -1
+        
+        hist_sum = sum(circuit_hist) if circuit_hist else 1
+        if hist_sum == 0:
+            hist_sum = 1
+        circuit_probs = torch.tensor(
+            [h / hist_sum for h in circuit_hist] + [0.0] * (self.corrector.vocab_size - len(circuit_hist)),
+            dtype=torch.float32
+        ).unsqueeze(0).to(device)
+        
+        context_padded = context_ids[-self.corrector.max_context_len:]
+        context_padded = context_padded + [0] * (self.corrector.max_context_len - len(context_padded))
+        
+        with torch.no_grad():
+            delta, gate = self.corrector(
+                circuit_state=torch.tensor([state], dtype=torch.long).to(device),
+                stack_top=torch.tensor([stack_top], dtype=torch.long).to(device),
+                context=torch.tensor([context_padded], dtype=torch.long).to(device),
+                circuit_probs=circuit_probs,
+            )
+        
+        final_logits = circuit_probs.squeeze(0) + gate.squeeze(0) * delta.squeeze(0)
+        predicted_token = final_logits.argmax().item()
+        
+        info = {
+            'circuit_state': state,
+            'stack_top': stack_top,
+            'circuit_histogram': circuit_hist,
+            'delta': delta.cpu().numpy().tolist(),
+            'gate': gate.cpu().numpy().tolist(),
+            'final_logits': final_logits.cpu().numpy().tolist(),
+        }
+        
+        return predicted_token, info
+    
+    def save(self, path: str) -> None:
+        """Save corrected hybrid model."""
+        torch.save({
+            'corrector_state_dict': self.corrector.state_dict(),
+            'circuit_type': 'pda' if isinstance(self.circuit, PDACircuitLM) else 'fsm',
+            'embed_dim': self.corrector.embed_dim,
+            'hidden_dim': self.corrector.hidden_dim,
+            'num_ssd_layers': self.corrector.context_layer.num_layers,
+            'max_context_len': self.corrector.max_context_len,
+            'stack_depth': self.corrector.stack_depth,
+        }, path)
+    
+    @classmethod
+    def load(cls, circuit_path: str, corrector_path: str) -> tuple['CorrectedHybridModel', Tokenizer]:
+        """Load corrected hybrid model."""
+        circuit, tokenizer = load_model(circuit_path)
+        checkpoint = torch.load(corrector_path, map_location='cpu')
+        state_dict = checkpoint['corrector_state_dict']
+        
+        embed_dim = checkpoint.get('embed_dim', 256)
+        hidden_dim = checkpoint.get('hidden_dim', 512)
+        num_ssd_layers = checkpoint.get('num_ssd_layers', 2)
+        max_context_len = checkpoint.get('max_context_len', 32)
+        stack_depth = checkpoint.get('stack_depth', 4)
+        
+        corrector = CorrectedCorrector(
+            vocab_size=circuit.vocab_size,
+            num_states=circuit.num_states,
+            stack_depth=stack_depth,
+            max_context_len=max_context_len,
+            embed_dim=embed_dim,
+            hidden_dim=hidden_dim,
+            num_ssd_layers=num_ssd_layers,
+        )
+        corrector.load_state_dict(state_dict)
+        
+        return cls(circuit, corrector), tokenizer
 
 
 if __name__ == '__main__':
